@@ -1,0 +1,1121 @@
+---
+title: "Exploring Walleye Population Decline in Wisconsin's Lakes"
+author: "Michael Mays"
+date: "Originally prepared: May 2020"
+output:
+  bookdown::html_document2:
+    number_sections: false
+    toc: true
+  fig_caption: yes
+  fontsize: 11pt
+  documentclass: article
+  extra_dependencies: ["booktabs", "floatrow", "amsmath", "hyperref", "xcolor"]
+bibliography: "walleye.bib"
+biblio-style: "apalike"
+in-header:
+  - \usepackage{mathtools}
+  - \usepackage{amsmath}
+  - \usepackage{textcomp}
+  - \usepackage{booktabs}
+  - \usepackage{apacite}
+  - \usepackage{natbib}
+  - \usepackage[hidelinks]{hyperref}
+  - \hypersetup{breaklinks=true}
+  - \usepackage{multirow}
+  - \usepackage{url}
+  - \usepackage{etoolbox}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F, message=F,
+                      warning=F, fig.width=10,
+                      out.width="\\linewidth")
+
+# Always helpful libraries
+library(tidyverse)
+library(broom)
+library(broom.mixed)
+
+# Model fitting libraries
+library(lme4)
+library(lmerTest)
+library(glmmTMB)
+suppressWarnings(library(DHARMa))
+library(MASS) # For rnegbin()
+library(optimx)
+
+# For ROC functions and createFolds function
+library(pROC)
+library(caret)
+
+# Plotting libraries
+library(sjPlot)
+library(cowplot)
+library(ggeffects)
+
+source("helper_functions.R")
+source("data.R")
+
+theme_general <- theme(panel.background = 
+                         element_rect(fill="white"),
+                       plot.background = 
+                         element_rect(fill="white"),
+                       panel.grid.major.x = element_blank(),
+                       panel.grid.minor.x = element_blank(),
+                       panel.grid.major.y = 
+                         element_line(color = "gray80"),
+                       panel.grid.minor.y =
+                         element_line(color = "gray80",
+                                      linetype="dotted"),
+                       axis.ticks = element_blank(),
+                       legend.position = "right",
+                       legend.background =
+                         element_rect(fill="white"),
+                       legend.text=element_text(size=16),
+                       legend.title=element_text(size=16),
+                       plot.title = element_text(size = 16,
+                                                 face = "bold",
+                                                 hjust = 0.5),
+                       plot.subtitle = element_text(hjust = 0.5),
+                       axis.title.y =
+                         element_text(size=16,
+                                      margin=margin(0,10,0,0)),
+                       axis.title.x =
+                         element_text(size=16,
+                                      margin=margin(10,0,0,0)),
+                       axis.text.y = element_text(size=12),
+                       axis.text.x = element_text(size=12),
+                       strip.text.y = 
+                         element_text(size = 15))
+
+
+```
+
+```{r poi YOY, echo=F, message=F, include=F}
+# Poisson
+gpoi <- glm(yoy_catch~
+            offset(log(meters_surv))+
+            size_acre+
+            year+
+            temp_survey+
+            lake_type*
+            clarity+
+            gdd_wtr_5c,
+    data=fish_sc, family = poisson)
+```
+
+```{r normal YOY and Juv, cache=T, echo=F, message=F, include=F}
+# Normal errors, random effect for year
+g <- lmer(log(yoy_catch+juv_catch)~
+            I(s_year) +
+            I(s_year^2) +
+            (1|wbic)+
+            log(size_acre), 
+          data=fish_nz)
+
+s_norm <- summary(g)
+
+```
+
+```{r NB FE YOY, cache=T, echo=F, message=F, include=F}
+# Negative binomial model
+gnb0 <- glm.nb(yoy_catch~
+                offset(log_km_surv)+
+                log_size_acre*
+                (I(s_year)+
+                I(s_year^2))+
+                temp_survey+
+                lake_type*
+                clarity, 
+               data=fish_sc, na.action = na.omit)
+
+g2 <- glm(yoy_catch~
+            offset(log_km_surv)+
+            log_size_acre*
+            (I(s_year)+
+            I(s_year^2))+
+            as.numeric(temp_survey)+
+            lake_type*
+            clarity
+    , data=fish_sc,
+    family = neg.bin(gnb0$theta),
+    control = list(maxit = 30), na.action = na.omit)
+
+
+s_nb_yoy <- summary(g2)
+```
+
+```{r NB lake RE YOY, cache=T, echo=F, message=F, include=F}
+
+# Negative binomial model - mixed effects
+gnb <- glmer.nb(yoy_catch~
+                offset(log_km_surv)+
+                log_size_acre+
+                I(s_year)+
+                I(s_year^2)+
+                temp_survey+
+                lake_type*
+                Secchi_satellite+
+                (1|wbic)
+           , data=fish_sc,
+           nAGQ=0,
+           control=glmerControl(optimizer="bobyqa"))
+
+# Degenerate hessian w 1 neg eigenvalue
+g1 <- glmer(yoy_catch~
+            offset(log_km_surv)+
+            log_size_acre+
+            I(s_year)+
+            I(s_year^2)+
+            temp_survey+
+            lake_type*
+            Secchi_satellite+
+            (1|wbic),
+    data=fish_sc, 
+    family = MASS::negative.binomial(getME(
+      gnb, "glmer.nb.theta"), link = "log"), 
+    control=glmerControl(optimizer="bobyqa"))
+
+```
+
+```{r NB CIs YOY, eval=F, echo=F, message=F, include=F}
+ci_sig <- confint(g1, 
+               method = "boot",
+               type = "parametric",
+               nsim = 10,
+               seed = 10,
+               parm = ".sig01", 
+               parallel = "multicore",
+               ncpus = 4, .progress="win")
+```
+
+```{r NB lake RE JUV, cache=T, echo=F, message=F, include=F}
+# Only use this chunk to show zero inflation
+# Negative binomial model - mixed effects
+gnbj <- glmer.nb(juv_catch~
+                offset(log_km_surv)+
+                log_size_acre+
+                I(s_year)+
+                I(s_year^2)+
+                temp_survey+
+                lake_type*
+                Secchi_satellite+
+                (1|wbic)
+           , data=fish_sc,
+           nAGQ=0,
+           control=glmerControl(optimizer="nloptwrap"))
+
+# Degenerate hessian for random effects
+# Neither random effect has variance distinguishable from 0
+g1j <- glmer(juv_catch~
+            offset(log_km_surv)+
+            log_size_acre+
+            I(s_year)+
+            I(s_year^2)+
+            temp_survey+
+            lake_type*
+            Secchi_satellite+
+            (1|wbic),
+    data=fish_sc, 
+    family = MASS::negative.binomial(getME(
+      gnbj, "glmer.nb.theta"), link = "log"), 
+    control=glmerControl(optimizer="nloptwrap"))
+
+```
+
+```{r ZI NB lake RE JUV, cache=T, echo=F, message=F, include=F}
+
+zi_nb_j <- glmmTMB(juv_catch~
+                offset(log_km_surv)+
+                log_size_acre+
+                I(s_year)+
+                I(s_year^2)+
+                temp_survey+
+                lake_type*
+                clarity+
+                (1|wbic),
+                data=fish_sc,
+        ziformula = ~1+log_size_acre,
+        family = "nbinom2")
+
+s_zinb_juv <- summary(zi_nb_j)
+
+```
+
+# Background & Introduction
+
+Northern Wisconsin walleye (*Sander vitreus*) are vital to numerous economic, recreational, and cultural activities in the state, particularly in the Ceded Territory occupied by the Lake Superior Chippewa Tribes. After Wisconsin affirmed the treaty rights of the state's Indigenous peoples to off-reservation fishing, hunting, and gathering in 1985, the Wisconsin Department of Natural Resources (WDNR) has taken up the task of managing and monitoring the state's walleye stocks in partnership with the Great Lakes Indian Fish and Wildlife Commission since 1987. Recently, however, WDNR and academics who monitor walleye populations have raised concerns over the long-term sustainability of walleye stocks. In particular, WDNR's 2016 report noted that "the proportion of lakes with YOY catch rates greater than 25 or 100 fish per [shoreline] mile in 2016 was less than the mean proportion of lakes observed with the same catch rates between 1990-2015" [@Rep2016, *pp. 39*]. Although there is some consensus that rising water temperatures and increases in largemouth bass populations have strong relationships with the rate of decline [for example, @Hansen2017], the broader causes remain unclear.
+
+The purpose of this project is to examine whether and to what extent walleye recruitment has declined over time, identify the types of lakes in which any such decline is occurring, and---if possible---tease out its potential causes. In particular, I focus on the effects of abiotic factors such as water conditions and temperature, as opposed to biotic factors like predators, on the recruitment of age-0 (known as young-of-the-year, or YOY) and age-1 (juvenile, or JUV) walleye. To do so, I use two models---a negative binomial generalized linear model and a zero-inflated generalized linear mixed model---to detect trends in the populations of age-0 and age-1 walleye since 1990. Additional research questions sought to determine whether any such trends were constant, and whether they were concentrated in certain types of lakes. <!--This produced the following major findings:
+
+## Major Findings
+
+* There is moderate-to-strong evidence of increasingly-rapid decline in age-0 walleye populations, though various confounding factors warrant further investigation.
+* Age-0 walleye populations vary by lake type and water clarity. However, there is little evidence that this pattern of variation has changed in the previous decade.
+* There is relatively little evidence of declining age-1 walleye populations, a result which aligns with existing literature. There are, however, differences in baseline populations among hydraulic classes and water clarities.
+* Further research is needed on the effects of Wisconsin's walleye stocking programs on age-0 and age-1 walleye, as well as on the potential for the way in which the Wisconsin Department of Natural Research selects lakes to survey to affect the apparent trends in age-0 walleye populations.-->
+
+# Data
+
+The data set analyzed included measurements of 14 variables for each of 171 Wisconsin lake-years, plus the name and ID of each lake, as well as the year it was sampled. The variables included in the data set were: 
+
+* the length of shoreline surveyed (in meters); 
+* the number of YOY walleye recruited and the YOY recruited per meter of surveyed shoreline; the number of juvenile walleye recruited; 
+* the temperature (in degrees F) when the survey was conducted; 
+* the size of each lake (in acres); 
+* the maximum depth of each lake (in meters);
+* a classifier for each lake based on how water enters it (seepage, spring, or drainage); 
+* a classifier for the overall water clarity of each lake (from very low to very clear); 
+* Secchi satellite depth (a quantitative water clarity measurement based on the maximum depth in meters at which a disk can be seen by a satellite when dropped in the lake);
+* the water's conductivity (in micro Seimens per centermeter); 
+* the lake's growing degree days (DD), which measures the accumulated length of time (in days) the lake was above the reference temperature of 5 degrees C; 
+* the mean temperature at the bottom of the lake (in degrees C) in June for the survey year; and
+* ice duration days, which is the length of time (in days) the lake spent iced over in the survey year.
+
+There were no duplicated lake-years.
+
+```{r, echo=T}
+sum(duplicated(fish[,c(1,3)]))
+```
+
+
+One observation was removed before analysis: the Big Eau Pleine Reservior data from survey year 2003, which is the only survey for which water clarity was "very low". Low water clarity reduces survey reliability by making walleye less easily found and thus less catchable, resulting in inconsistent samples [@Hansen2015a]. For similar reasons, Hansen et al. [-@Hansen2015a] finds surveys conducted at temperatures below 10 degrees C or above 21 degrees C can be unreliable, but the dataset contained no such surveys.
+
+```{r, echo=T}
+sum(fish$temp_survey_c<10|fish$temp_survey_c>21)
+```
+
+```{r first-year-plot, eval=F, echo=F, message=F, error=F, results='hide', warning=F, fig.align="center"}
+# Line plot of means by year w boxplots overlaid
+fish %>%
+  group_by(year) %>%
+  mutate(m = mean(yoy_per_meter)) %>%
+ggplot() +
+  geom_point(aes(x=year, y=yoy_per_meter), alpha=0.7) +
+  geom_line(aes(x=year, y=m)) +
+  geom_boxplot(data=fish,
+               aes(x=year, y=yoy_per_meter, group=year),
+               outlier.color="red", alpha=0.3, outlier.alpha = 1,
+               position="identity") +
+  theme_general +
+  theme(legend.position = "none") +
+  labs(x="Year",
+       y="YOY per meter",
+       title="YOY per meter by year with boxplots overlaid") +
+  ylim(0, 0.13)
+```
+
+```{r}
+# Finding correlations between all pairs of numeric variables
+f2 <- fish %>% 
+  select_if(is.numeric) %>%
+  as.matrix %>%
+  cor(method="pearson") %>%
+  as.data.frame %>%
+  rownames_to_column(var = 'var1') %>%
+  gather(var2, value, -var1) %>%
+  filter(value >0.5, value<0.99) %>%
+  mutate(var_order = paste(var1, var2) %>%
+           strsplit(split = ' ') %>%
+           map_chr( ~ sort(.x) %>% 
+                      paste(collapse = ' '))) %>%
+  mutate(cnt = 1) %>%
+  group_by(var_order) %>%
+  mutate(cumsum = cumsum(cnt)) %>%
+  filter(cumsum == 2) %>%
+  ungroup %>%
+  dplyr::select(-var_order, -cnt, -cumsum)
+```
+
+```{r data, cache=T, echo=F, message=F, include=F}
+
+sum(fish$temp_survey_c<10|fish$temp_survey_c>21) # No obs <10 or >21 deg C
+table(fish$clarity)
+table(fish$clarity, fish$lake_type)
+
+#acf(fish$yoy_per_meter) # No autocorrelation (no need to lag)
+
+# Determine if zeros come from different generating process
+fish %>%
+  filter(lake_name %in% unlist(fish[fish$yoy_catch==0,"lake_name"])) %>%
+  dplyr::select(lake_name, year, yoy_catch, juv_catch)
+
+```
+
+# Statistical Models
+
+I fit two models to assess YOY recruitment and one to assess JUV recruitment. They are detailed below.
+
+## Log-Normal (YOY)
+
+The first replicates the log-normal mixed-effects model fit by WDNR in its annual Ceded Territory Fishery Assessment Reports [see, e.g., @Rep2016] with lake-specific effects and the natural logarithm of lake acreage as predictors. However, there are three important differences between my log-normal mixed model and WDNR's. First, WDNR uses separate models for lakes in which walleye populations are maintained through natural reproduction, through government walleye stocking, and for low population density lakes with irregular natural reproduction patterns; this data was not available to me. Second, the response variable in WDNR's model is the estimated population of a lake, which is estimated with the Chapman-modified Petersen Estimator [see @Rep2016, *pp. 5*], data which was also unavailable to me. Instead, I use the natural logarithm of the surveys' total captures (YOY plus juveniles caught) as the response variable, with zero-valued totals removed from the dataset before fitting the data. Third, the model used here adds a quadratic fixed effect coefficients for year (or, more specifically, years since 1990, which is the earliest survey for which data is available). The WDNR model only contains a linear term, and it is treated as a factor while mine is used as a continuous variable; these changes help the model fit the goals of this project, and increases commensurability between the log-normal model and the other models fit in this project. The overall purpose of the log-normal model is to serve as a baseline against which to compare the other models. This model is parameterized as:
+
+\begin{align*}
+ln(y_{i\ell}^\prime) &= \alpha_{\ell}^{LN} + \beta_0 + \beta_1 ln(\text{Acreage}_i) + \beta_2 \text{(Years after 1990)}_i + \beta_3 \text{(Years after 1990)}_i^2 + \varepsilon_{i\ell}\\
+&= \boldsymbol{X}_{i\ell}^{LN} \boldsymbol{\beta}^{LN}\\
+\text{Where}~&\begin{cases}
+\boldsymbol{X}^{LN} \qquad \text{is a matrix of predictors and}~\boldsymbol{X}^{LN}_i~\text{is a row vector for the } i^{th}~\text{observation.}\\
+\boldsymbol{\beta}^{LN} \qquad \text{is a vector of coefficients.}\\
+y_{i\ell}^\prime = y_{i\ell}^{YOY}+y_{i\ell}^{JUV}\\
+\alpha_{\ell}^{LN} \sim N(0, \sigma^2_a)\qquad \text{is the random effect coefficient for the } \ell^{th} ~\text{lake.}\\
+\varepsilon_{i\ell} \sim N(0, \sigma^2_e) \qquad \text{is the Gaussian noise coefficient.}\\
+\mathbb{E}(ln(y_{i\ell}^\prime)|\boldsymbol{X}_{i\ell}^{LN})=\boldsymbol{X}_{i\ell}^{LN} \boldsymbol{\beta}^{LN}\\
+Var(ln(y_{i\ell}^\prime)|\boldsymbol{X}_{i\ell}^{LN})= \sigma^2_a+\sigma^2_e
+\end{cases}
+\end{align*}
+
+## Negative Binomial (YOY)
+
+The second YOY model fit was a negative binomial generalized linear model model. Since the response is count data, Poisson regression was an obvious first choice. However, the data had significant overdispersion, even when accounting for lake-specific effects via a Poisson GLMM; a plot showing this overdispersion is given in the next section, which covers diagnostics. Given overdispersion, an obvious second choice was a negative binomial GLMM; the Poisson-Gamma mixture offers an additional dispersion parameter to account for the variance unexplained by the random effect. However, this model fell into the opposite problem: underdispersion due to very nearly observation-level random effects (a nice description of this problem is given by Bolker [-@Stack]). As with the Poisson case, this is shown in the next section. In short, very few lakes in the dataset were sampled in more than one year, and given this particular set of data, the resulting negative binomial GLMM over-fit to an unidentifiable degree. Instead, the lake-specific effects from a mixed-effects model were proxied by the limnological characteristics of each lake, which begs the question of model selection.
+
+Formal model selection for this model was limited; the primary motivations were subject knowledge- and goal-based. The goal was to identify trends in YOY recruitment over time, determine if that trend is constant, and identify the types of lakes in which such a trend is present; a predictor was added only if it addressed one of these goals, or controlled for potential confounding factors. To start with, this model includes all of the fixed-effects coefficients found in the log-normal model. The size of the lake (in acres) is mainly a control (larger lakes tend to have larger fish populations), while the linear and quadratic terms for years after 1990 are key to my research questions. In addition, the model includes fixed effects for the survey temperature (this variable was centered at its mean and scaled by its standard deviation; it is mainly included as a control, so interpretability is not particularly important), plus the lake's hydraulic class and clarity. The former is a control; walleye activity is related to the air temperature on a given survey day [@Hansen2015a, *pp. 662*; @Hansen2004; @Hansen2017]. The latter two main effects are largely controls, and their substantive importance to answering the research questions is mediated by their interaction terms (this is explained below and further detailed in the analysis section).
+
+<!--Further, certain groups of candidate predictors effectively proxy the same limnological features. For example, the temperature at time of survey, the number of growing degree days (above 5 degrees C), the mean temperature at the bottom of the lake in June, and number of days the lake was iced over all measure temperature. The effects of other predictors (e.g., conductance, maximum depth) were considered marginal relative to these factors overall, a theory which was borne out in preliminary backwards stepwise model selection procedures. --><!-- EXPLAIN/Give p-values for these coefs in a full-er model. --><!-- MOTIVATE THE INTERACTION TERMS - want to see if effect of size changes over years --> 
+
+Finally, the model contains two sets of interaction effects: first, between the linear and quadratic terms for years since 1990 and the natural logarithm of lake acreage; second, between lake type and its clarity classification. The former was included partially as a control, and partially for substantive reasons. If there is a relationship between years and YOY recruitment, this trend will likely vary across lake sizes, since larger lakes can have wider 'swings' in walleye population than lakes with small populations. The second interaction is included because different hydraulic classes tend to have different water clarity levels, which in turn affects the amount of walleye that can be found by a survey [@Hansen2015a, *pp. 662*]. Water clarity also affects the ecosystem of a lake via amount of sunlight that can reach flora and fauna, though the effects of clarity are fairly quantized (details on this non-linear relationship can be found in Bauer et al. [-@Clarity]). Finally, to account for the varied exposure of differently-sized lakes, I added an offset coefficient for the log-length of shoreline surveyed (in km).
+
+\begin{align*}
+\mu_{i}^{YOY} &= \text{Shoreline }\text{Surveyed}_i \times \text{exp}\biggl\{\beta_0 + \sum_{j=1}^{3} \gamma_j \mathbf{1}_{(\text{Lake type}_i =j)} + \sum_{k=1}^{3} \nu_k \mathbf{1}_{(\text{Clarity}_i =k)} + \beta_1 ln(\text{Acreage}_i) \\&\qquad+ \beta_2 \text{(Years after 1990)}_i + \beta_3 \text{(Years after 1990)}^2_i + \beta_4 \text{(Survey Temperature)}_i \\&\qquad+ \xi_1 [ln(\text{Acreage}_i)\times\text{(Years after 1990)}_i] + \xi_2 [ln(\text{Acreage}_i)\times\text{(Years after 1990)}_i^2] \\&\qquad+ \sum_{j=1}^{3} \sum_{k=1}^{3} \lambda_{jk} [\mathbf{1}_{(\text{Lake type}_i =j)}\times \mathbf{1}_{(\text{Clarity}_i =k)}]\biggr\}\\
+&= \text{Shoreline }\text{Surveyed}_i + \text{exp}\{\boldsymbol{X}_{i}^{NB} \boldsymbol{\beta}^{NB}\}\\
+\text{Where}~&\begin{cases}
+\text{exp}\{\cdot\}\qquad\text{is the constant } e \text{ raised to the power } \{\cdot\}\\
+\mathbf{1} \qquad \text{takes value 1 when the condition in }_{(\cdot)}~\text{is true and 0 otherwise.}\\
+\boldsymbol{X}^{NB} \quad~~ \text{is a matrix of predictors and}~\boldsymbol{X}^{NB}_i~\text{is a row vector for the } i^{th}~\text{observation.}\\
+\boldsymbol{\beta}^{NB} \qquad \text{is a column vector of coefficients.}\\
+Y_{i}^{YOY}|\boldsymbol{X}_{i}^{NB} \sim~NB(\mu_{i}^{YOY}, \theta)\\
+\mathbb{E}(Y_{i}^{YOY}|\boldsymbol{X}_{i}^{NB}) = \mu_{i}^{YOY}\\
+Var(Y_{i}^{YOY}|\boldsymbol{X}_{i}^{NB}) = \mu_{i}^{YOY}+ \frac{(\mu_{i}^{YOY})^2}{\theta}
+\end{cases}
+\end{align*}
+
+## Zero-Inflated Negative Binomial (JUV)
+
+The initial model used to assess juvenile walleye recruitment was identical to the negative binomial fixed effect detailed above with the response $Y^{YOY}$ changed its JUV equivalent $Y^{JUV}$. However, unlike the YOY model, the JUV model suffered from zero inflation, meaning the data contains substantially more zero-valued responses than the model predicts. Like the dispersion mentioned above, a plot of this zero-inflation is shown in the next section on diagnostics. Zero-inflation results in poor overall model fit, potentially biases estimators, and leads to underestimated standard errors. Instead, I fit a zero-inflated negative binomial mixed-effects model. This was chosen over other options for addressing zero-inflation (e.g., hurdle models) because many lakes with zero juvenile counts had non-zero YOY counts. The zero-valued observations are thus likely a mixture of 'true' zeroes (i.e., lakes with no walleye, and therefore no juveniles) and 'random' zeroes (i.e., lakes with small walleye populations where no juvenile walleye were found). The zero-inflated model is a mixture of a point mass at zero for 'true' zero-valued observations ($\omega_i=1$) with a negative binomial distribution for the count data ($\omega_i=0$), which can include 'excess' zero counts. The probability of observing a 'true' zero count for the $i^{th}$ observation is inflated with probability $\pi_i$, so a zero-valued response has probability $1-\pi_i$ of being an 'random' (count) zero. The lake random effect was included in this model because of the increased variance in observed JUV counts relative to YOY counts, and the resulting model remained identifiable. Though the overall magnitude of the random effect variance proved small (see the beginning of the analysis section), its inclusion was maintained for largely theoretical reasons rather than *per se* practical ones.
+
+\begin{align*}
+&\begin{cases}
+log\left(\frac{\pi_i}{1-\pi_i}\right) = \delta_0 + \delta_1 ln(\text{Acreage}_i) = \boldsymbol{Z}_{i} \boldsymbol{\delta} & \text{When }\omega_i=1\\
+\mu_{i\ell}^{JUV} = \text{Shoreline }\text{Surveyed}_i \times \text{exp}\biggl\{\beta_0 + \sum_{j=1}^{3} \gamma_j \mathbf{1}_{(\text{Lake type}_i =j)} + \sum_{k=1}^{3} \nu_k \mathbf{1}_{(\text{Clarity}_i =k)} \\\qquad + \beta_1 ln(\text{Acreage}_i) + \beta_2 \text{(Years after 1990)}_i + \beta_3 \text{(Years after 1990)}^2_i \\\qquad + \beta_4 \text{(Survey Temperature)}_i + \sum_{j=1}^{3} \sum_{k=1}^{3} \lambda_{jk} [\mathbf{1}_{(\text{Lake type}_i =j)}\times \mathbf{1}_{(\text{Clarity}_i =k)}]\biggr\}& \text{When }\omega_i=0\\
+\mu_{i\ell}^{JUV} = (1-\pi_i)[\text{Shoreline }\text{Surveyed}_i \times \text{exp}\{\boldsymbol{X}_{i}^{ZINB} \boldsymbol{\beta}^{ZINB} + \alpha_{\ell}^{ZINB}\}] & \text{When }\omega_i=0
+\end{cases}\\
+\end{align*}
+
+\begin{align*}
+\text{Where}~\begin{cases}
+\boldsymbol{Z}  \quad~~ \text{is a matrix of predictors in the logit model and}~\boldsymbol{Z}_i~\text{is a row vector for the } i^{th}~\text{observation.} \\
+\boldsymbol{\delta} \qquad \text{is a vector of coefficients in the logit model.}\\
+\boldsymbol{X}^{ZINB} \quad~~ \text{is a matrix of predictors in the count model and}~\boldsymbol{X}^{ZINB}_i~\text{is a row vector for the } i^{th}~\text{observation.}\\
+\boldsymbol{\beta}^{ZINB} \qquad \text{is a vector of coefficients in the count model.}\\
+\alpha_{\ell}^{LN} \sim N(0, \sigma^2_{a^\prime})\qquad \text{is the random effect coefficient for the } \ell^{th} ~\text{lake.}\\
+Y_{i\ell}^{JUV}|(\boldsymbol{X}_{i}^{ZINB}, \omega_i=0) \sim~NB(\mu_{i\ell}^{JUV}, \kappa)\\
+\mathbb{E}(Y_{i\ell}^{JUV}|\boldsymbol{X}_{i}^{ZINB}) = (1-\pi_i)\mu_{i\ell}^{JUV}\\
+Var(Y_{i}^{JUV}|\boldsymbol{X}_{i}^{ZINB}) = (1-\pi_i)[\mu_{i\ell}^{JUV}+ (\mu_{i\ell}^{JUV})^2(\kappa+\pi_i)]
+\end{cases}
+\end{align*}
+
+The count part of this model ^[The difference in negative binomial distributions, specifically $\theta$ vs. $\kappa$, is due to the different packages used to fit the models. The YOY negative binomial model was fit using the `lme4` package, which does not allow for zero-inflated models and uses $\theta=1/\kappa$ as the dispersion parameter, while the zero-inflated model was fit using the `glmmTMB` package, which uses $\kappa=1/\theta$ as a shape parameter [@lme4; @glmmTMB]. Some sources refer to the `glmmTMB` shape parameter as $\alpha$, which is already in use as a random effect coefficient, so $\kappa$---a common choice for the negative binomial shape parameter---was used instead.] ($\omega_i=0$) contains the same predictors as the YOY negative binomial model \(\boldsymbol{X}^{NB}\) minus the interaction terms between $ln(\text{Acreage})$ and the year terms. The symbols used above are the same as those in the YOY model for shared parameters, though this is done mainly for consistency. The values of the parameters \(\boldsymbol{\beta}^{ZINB}\) will be different, due to both the different response variable and the difference in model. Similarly, the random effect for lake \(\alpha_{\ell}^{ZINB}\) is conceptually the same as \(\alpha_{\ell}^{LN}\) from the log-normal model, but since they are stochastic terms, there is no guarantee that they are equal for all $\ell$.
+
+# Model Diagnostics
+
+Model assumption checks and diagnostics were performed using the `DHARMa` package, which "uses a simulation-based approach to create readily interpretable scaled (quantile) residuals" for linear models, including generalized linear models and mixed models [@DHARMa]. In short, each observation is independently simulated based on the fitted model, and each observation's residual is defined as the value of the observation's simulated empirical density function at the observed value. The resulting residuals are thus scaled from the distribution proscribed by the model's functional form to a standard uniform distribution under the null hypothesis that the model is correctly specified. This makes violated assumptions easy to spot, as well as creating diagnostic plots that are easily interpreted and comparable across model structures and distributional assumptions.
+
+## Log-Normal (YOY)
+
+Whether or not the log-normal model strictly meets model assumptions is not particularly important to the analysis; it is only included as a reference. Still, the QQ plot and residuals vs. fitted values plots suggest the model is reasonably within assumptions of uniformly distributed constant-variance scaled residuals. These are respectively checked by a Kolmogorov-Smirnov test ($H_0:$ The empirical CDF of the scaled residuals is a standard uniform CDF vs. $H_1:$ The empirical CDF lies above or below the CDF of a standard uniform, $p=0.29$) and a simulated quantile regression test on the scaled residuals ($H_0:\cap_{\tau\in\mathrm{T}} ~q_{\tau}=q$ vs. $H_1:\cup_{\tau\in\mathrm{T}} ~q_{\tau}\neq q$ where $q_{\tau}$ is the $\tau$ quantile of the scaled residuals in $\mathrm{T}=\{0.25, 0.5, 0.75\}$, $p=0.36$).
+
+```{r normal-resid, echo=F, message=F, error=F, results='hide', warning=F, fig.align="center", fig.cap="Left: Scaled Residuals QQ Plot for Log-Normal Model. Right: Scaled Residuals vs. Fitted Values Plot for Log-Normal Model."}
+simulationOutput0 <- simulateResiduals(g)
+
+#testDispersion(simulationOutput0)
+
+#plot(simulationOutput0)
+
+#testResiduals(simulationOutput0)
+
+par(mfcol=c(1, 2))
+plotQQunif(simulationOutput0)
+plotResiduals(simulationOutput0)
+
+```
+
+```{r normal-autocorr, echo=F, message=F, error=F, results='hide', warning=F, fig.align="center", fig.cap="Left: Autocorrelation Factor by Lag for YOY Log-Normal Model. Right: Scaled Residuals by Year for YOY Log-Normal Model."}
+
+r0 <- recalculateResiduals(simulationOutput0, group=fish_nz$year)
+testTemporalAutocorrelation(r0, time=unique(fish_nz$year))
+
+```
+
+## Negative Binomial (YOY)
+
+The plot below shows that even a YOY Poisson model with the smallest dispersion among all models with up to three-way interaction effects and/or random effects was significantly overdispersed ($H_0: S_{obs}/S_{sim}=1$ vs. $H_1:S_{obs}/S_{sim}>1$, where $S_{obs}$ is the standard deviation of scaled residuals in the fitted model and $S_{sim}$ is the standard deviation scaled residuals assuming the model was correctly specified, $S_{obs}/S_{sim}=21.92$, $p\approx 0$). 
+
+```{r poi-zi, echo=F, message=F, error=F, results='hide', warning=F, fig.cap="Distribution of Simulated Residual SD (Histogram) vs. Fitted Model Residual SD (Red Line) YOY Counts in Poisson Model."}
+testDispersion(gpoi, alternative = "g")
+```
+
+Similarly, the plot below shows significant underdispersion for a similar YOY negative binomial mixed-effect model that otherwise met assumptions ($H_0: S_{obs}/S_{sim}=1$ vs. $H_1:S_{obs}/S_{sim}<1$ where $S_{\{\cdot\}}$ is defined as above, $S_{obs}/S_{sim}=0.60382$, $p=0.044$).
+
+```{r nb-yoy-zi, echo=F, message=F, error=F, results='hide', warning=F, fig.cap="Distribution of Simulated Residual SD (Histogram) vs. Fitted Model Residual SD (Red Line) YOY Counts in Negative Binomial Mixed-Effects Model."}
+testDispersion(g1, alternative = "l")
+```
+
+The plots below are for the final YOY negative binomial fixed-effect model. The QQ plot and scaled residuals vs. fitted values plot do not noticeably suggest model assumptions were violated. The Kolmogorov-Smirnov test for uniformly distributed scaled residuals was non-significant ($H_0:$ The empirical CDF of the scaled residuals is a standard uniform CDF vs. $H_1:$ The empirical CDF lies above or below the CDF of a standard uniform, $p=0.7727$). The simulated quantile regression test on the scaled residuals similarly did not provide evidence that dispersion varies across predicted values ($H_0:\cap_{\tau\in\mathrm{T}} ~q_{\tau}=q$ vs. $H_1:\cup_{\tau\in\mathrm{T}} ~q_{\tau}\neq q$ where $q_{\tau}$ is the $\tau$ quantile of the scaled residuals in $\mathrm{T}=\{0.25, 0.5, 0.75\}$, $p=0.9554$).
+
+<!-- $v_{t}=\rho_j v_{t-j} + e_t$ where $v_{t}$ is the mean scaled residual for observations at time $t$, $0\leq j \leq t \leq m$ where $m$ is the number of time periods, and $e_t$ is some other error term at time $t$. The test statistic for a lag of $j$ time periods is $d_j =\frac{\sum_{t=j+1}^m (\hat{v}_t-\hat{v}_{t-j})^2} {\sum_{t=j+1}\hat{v}_t^2}$ -->
+
+```{r nb-disp-res, echo=F, message=F, error=F, results='hide', warning=F, fig.cap="Left: Scaled Residuals QQ Plot for YOY Negative Binomial Fixed-Effects Model. Right: Scaled Residuals vs. Fitted Values Plot for YOY Negative Binomial Fixed-Effects Model."}
+
+simulationOutputg <- simulateResiduals(g2)
+par(mfrow=c(1,2), mar=c(3, 5, 3, 1))
+plotQQunif(simulationOutputg)
+testDispersion(g2, alternative = "l")
+
+#plotResiduals(simulationOutputg)
+#testZeroInflation(simulationOutputg)
+```
+
+The next plot shows scaled residuals by year, and suggests a cyclical pattern of YOY recruitment with an inconsistent periodicity. A Durbin-Watson test^[Although the Durbin-Watson test is designed for normally distributed residuals, Hartig notes "[i]n simulations, I didn't see a problem with this [scaled residuals] setting" [-@DHARMa_temp].] did not suggest significant temporal autocorrelation among the scaled residuals ($H_0:\rho =0$ vs. $H_1:\rho \neq 0$ where $\rho$ is the autocorrelation between the mean scaled residual for observations at time $t$ and time $t-1$ for each $t$, $p=0.63$). This topic is given a more extensive discussion in the next section.
+
+```{r nb-disp-ac, echo=F, message=F, error=F, results='hide', warning=F, fig.cap="Left: Autocorrelation Factor by Lag for YOY Negative Binomial Fixed-Effects Model. Right: Scaled Residuals by Year for YOY Negative Binomial Fixed-Effects Model."}
+r2g <- recalculateResiduals(simulationOutputg, group=fish$year)
+testTemporalAutocorrelation(r2g, time=unique(fish$year))
+```
+
+## Zero-Inflated Negative Binomial (JUV)
+
+The initial negative binomial mixed-effects model for JUV recruitment did not suffer from the unidentifiability issues of the mixed-effects YOY model. Instead, the model showed evidence of zero inflation ($H_0: Z_{obs}/\hat{\mathbb{E}}(Z_{sim})=1$ vs. $H_1:Z_{obs}/\hat{\mathbb{E}}(Z_{sim})>1$, where $Z_{obs}$ and \(\hat{\mathbb{E}}(Z_{sim})\) are the observed number of zero-count JUV observations and the expected value of a simulated distribution assuming the model was correctly specified, respectively, $Z_{obs}/\hat{\mathbb{E}}(Z_{sim})=1.7986$, $p\approx 0$). The plot below compares the simulated (expected) distribution of $Z_{sim}$ vs. $Z_{obs}$.
+
+```{r nb-juv, echo=F, message=F, error=F, results='hide', warning=F, fig.cap="Expected Distribution of Zero-Valued Observations (Histogram) vs. Observed Count (Red Line) for JUV Negative Binomial Mixed-Effects Model"}
+simulationOutput_j <- simulateResiduals(g1j)
+testZeroInflation(simulationOutput_j, alternative="g")
+```
+
+The plots here reflect the zero-inflated negative binomial mixed-effects model; they have the same interpretations as those for the negative binomial YOY model, and the same tests were performed using the same hypotheses. The zero inflation issues are addressed by this model ($p=576$).
+
+```{r zinb-juv-zi, echo=F, message=F, error=F, results='hide', warning=F, fig.cap="A"}
+
+simulationOutput_j_zi <- simulateResiduals(zi_nb_j)
+testZeroInflation(simulationOutput_j_zi, alternative="g")
+
+```
+
+Neither the Kolmogorov-Smirnov test on the distribution of scaled residuals ($p=0.9913$) or simulated quantile test for constant dispersion ($p=0.6065$) provided evidence that these model assumptions were violated by the zero-inflated negative binomial mixed-effects model.
+
+```{r zinb-juv-res, echo=F, message=F, error=F, results='hide', warning=F, fig.cap="Left: Scaled Residuals QQ Plot for JUV Zero-Inflated Negative Binomial Fixed-Effects Model. Right: Scaled Residuals vs. Fitted Values Plot for JUV Zero-Inflated Negative Binomial Fixed-Effects Model."}
+plot(simulationOutput_j_zi)
+```
+
+The Durbin-Watson test gave minor cause for concern, but its results are instructive. The two-sided test ($H_1: \rho\neq 0$, $p=0.086$) provides some evidence of autocorrelation. However, the direction of autocorrelation is somewhat surprising. The one-sided test for negative autocorrelation ($H_1: \rho< 0$, which would indicate a downward trend in JUV recruitment) yielded $p=0.9568$, indicating that, in fact there exists positive autocorrelation $p=0.0432$. This was not addressed by, e.g., respecifying the model for reasons that will be addressed in the next section.
+
+```{r zinb-juv-ac,echo=F, message=F, error=F, results='hide', warning=F, fig.cap="Left: Scaled Residuals by Year for JUV Zero-Inflated Negative Binomial Fixed-Effects Model. Right: Autocorrelation Factor by Lag for JUV Zero-Inflated Negative Binomial Fixed-Effects Model."}
+r2_j_zi <- recalculateResiduals(simulationOutput_j_zi,
+                                group=ft$s_year)
+testTemporalAutocorrelation(r2_j_zi, time=unique(ft$s_year),
+                            alternative = "g")
+```
+
+# Analysis
+
+## Lake Random Effects
+
+The random effect in the log-normal model shows higher variance (a larger lake effect) than the zero-inflated negative binomial JUV model, which is perhaps expected for two reasons. First, the log-normal model has fewer control parameters, so the lake random effect is doing more; much of the variability that is not explained by year or acreage is "pushed" into the random effect term. Second, the response in the log-normal model is the sum of YOY and JUV recruitment, which will tend to have larger variance overall than a model of JUV alone. Regardless, the random effects in both models are primarily used as controls, and their interpretation is not particularly important.
+
+```{r lake-re-plot, echo=F, message=F, results='hide', fig.cap="Random Intercepts in Log-Normal Mixed Effect Model with Confidence Intervals"}
+
+plot_model(g, type="re", sort.est = "sort.all",
+           show.intercept = T, transform = "exp",
+           terms = "(Intercept)", grid=F,
+           title="Random Intercepts (LN Model)",
+           vline.color = "grey60") + 
+  labs(y=expression(paste("Intercept (",
+                          e^(hat(beta)[0]+alpha["\u2113"]), 
+                          ")")))+
+  theme_general+
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray80"))
+
+```
+
+```{r lake-re-zinb, echo=F, message=F, results='hide', fig.cap="Random Intercepts in Zero-Inflated Negative Binomial Mixed-Effects Model with Confidence Intervals"}
+
+plot_model(zi_nb_j, type="re", sort.est = "sort.all",
+           transform = "exp",
+           terms = "(Intercept)", 
+           grid=F,
+           title="Random Intercepts (ZINB JUV Model)",
+           vline.color = "grey60") + 
+  labs(y=expression(paste("Intercept (",
+                          e^(hat(beta)[0]+alpha["\u2113"]), 
+                          ")")))+
+  theme_general+
+  theme(axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray80"))
+
+```
+
+```{r cis-for-res, eval=F, echo=F, message=F, include=F}
+
+sig_a_norm <- s_norm$varcor$wbic[[1]]^2
+sig_e_norm <- s_norm$sigma^2
+
+sig_ci_norm <- confint(g, method="profile",
+                       parm=c(".sig01", ".sigma"))^2
+
+c("$\\hat{\\sigma}^2$", "$2.5\\%$",
+                    "$97.5\\%$")
+
+sig_norm_df <- data.frame(
+          'Coefficient' = c("$\\hat{\\sigma}^2_{a}$",
+                        "$\\hat{\\sigma}^2_{e}$"),
+           "Est"=c(sig_a_norm, sig_e_norm),
+           "L"=c(sig_ci_norm[,1]),
+           "U"=c(sig_ci_norm[,2])) %>%
+  as_tibble()
+colnames(sig_norm_df) <- c("Coefficient", "$\\hat{\\sigma}^2$",
+                           "$2.5\\%$","$97.5\\%$")
+
+
+sig_a_zi <- s_zinb_juv$varcor$cond$wbic[[1]]^2
+sig_e_zi <- s_zinb_juv$sigma^2
+
+#confint(zi_nb_j, parm=c("theta_"), method="Wald", parallel = "snow",
+#        ncpus=4)^2
+
+#confint(zi_nb_j, parm=c("beta_"), method="Wald", parallel = "snow",
+#        ncpus=4)^2
+
+```
+
+```{r citab norm, eval=F, echo=F, results='asis'}
+print(xtable(sig_norm_df),
+      comment=F, include.rownames=F,
+      sanitize.text.function = function(x){x})
+```
+
+## Temporal Autocorellation & Recruitment Trends
+
+```{r confint-year, cache=T, echo=F, message=F, include=F}
+
+time_coef_norm <- fixef(g)[c(2, 3)]
+time_ci_norm <- confint(g, parm=c("I(s_year)",
+                                  "I(s_year^2)"))
+time_p_norm <- s_norm$coefficients[c(2, 3), 5]
+
+time_coef_yoy <- coef(g2)[c(3, 4, 10, 11)]
+time_ci_yoy <- confint(g2)[c(3, 4, 10, 11),]
+time_p_yoy <- s_nb_yoy$coefficients[c(3, 4, 10, 11), 4]
+
+time_coef_juv <- s_zinb_juv$coefficients$cond[c(3, 4),1]
+time_ci_juv <- confint(zi_nb_j, parm="beta_")[c(3, 4), c(1, 2)]
+time_p_juv <- s_zinb_juv$coefficients$cond[c(3, 4),4]
+
+
+```
+
+The main research question is whether there is evidence that YOY and JUV walleye populations are declining. And if there is a decline for a given age of walleye, is that decline steady, and in which types of lakes is the decline occurring? The former question does not have a clear answer. There is some evidence that YOY walleye populations are declining, but given the limits of my analysis along with broader contextual factors, the results are not conclusive. Further, the JUV model does not provide evidence of any overall trend in recruitment, and this non-evidence of a trend is clearer than the evidence of a trend in YOY recruitment.
+
+```{r time-plot-1, echo=F, message=F, results='hide', fig.cap="Left: Year After 1990 Coefficients by Model with Confidence Intervals. Right: Year Coefficient P-Values by Model"}
+df_time_coef <- data.frame(Model = c(rep("Log-Normal",
+                                         length(time_coef_norm)),
+                     rep("NB YOY", length(time_coef_yoy)),
+                     rep("ZINB JUV", length(time_coef_juv))),
+           term = c(names(time_coef_norm),
+                    names(time_coef_yoy),
+                    names(time_coef_juv)),
+           Estimate=c(time_coef_norm, 
+                      time_coef_yoy, 
+                      time_coef_juv),
+           L= c(time_ci_norm[,1], 
+                time_ci_yoy[,1], 
+                time_ci_juv[,1]),
+           U = c(time_ci_norm[,2],
+                 time_ci_yoy[,2],
+                 time_ci_juv[,2]),
+           p = c(time_p_norm, time_p_yoy, time_p_juv)) %>%
+  dplyr::mutate(term = dplyr::recode(term, 
+                `I(s_year)`="Years After 1990",
+                `I(s_year^2)`="Quadratic: \nYears After 1990",
+                `log_size_acre:I(s_year)`=
+                  "Acreage*Years \nAfter 1990",
+                `log_size_acre:I(s_year^2)`=
+                  "Acreage*Quadratic: \nYears After 1990"),
+                sig=ifelse(p<0.05, "Significant",
+                           "Not Significant"))
+
+time_p <- ggplot(df_time_coef, aes(x=Estimate, 
+                         y=term,
+                         col=Model,
+                         xmin=L, 
+                         xmax=U)) + 
+  geom_pointrange(position = position_dodge(width=.3),
+                  show.legend = F) +
+  theme_general +
+  theme(axis.ticks.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray80"))+
+  labs(y="",
+       x="Log(Coefficient)",
+       title="Coefficients") + 
+  xlim(c(-1, 2))
+
+time_pval_p <- ggplot(df_time_coef, aes(x=p, y=term, col=Model)) +
+  geom_point(position = position_dodge(width=.3), size=2.4) +
+  theme_general +
+  theme(axis.text.y= element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.grid.minor.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray80"))+
+  labs(y="",
+       x="p-value",
+       title="P-Value") + 
+  xlim(c(0, 1)) +
+  geom_vline(aes(xintercept=0.05), col="red")
+
+plot_grid(time_p, time_pval_p, ncol=2,
+          rel_widths = c(1/2, 1/2))
+```
+
+<!--\begin{figure}[!htb]
+\begin{center}
+\includegraphics[width=.8\textwidth, height=3.2in]{time_plot.jpeg}
+\caption{{\footnotesize Left: Year After 1990 Coefficients by Model with Confidence Intervals. Right: Year Coefficient P-Values by Model}}
+\end{center}
+\end{figure}-->
+
+As is shown in the above plot, the log-normal model's linear year term is statistically significant at the 95\% confidence level, and the quadratic year term is negative-valued and borderline significant. This provides moderate evidence that walleye recruitment is indeed declining at a faster rate over time. In this model, the log-count of walleye recruited was increasing year-on-year until $\approx$ 7.34 years after 1990 (between 1997--1998), but has been declining since. Similarly, in the negative binomial YOY model, all year-based coefficients were found to be statistically significant. When controlling for all other factors, the key finding is that change in YOY recruitment across years varies by lake acreage; while the quadratic main effect for year is negative (indicating declining YOY recruitment), the quadratic interaction term with log-acreage is positive. These quadratic year terms are minimized by a log-acreage of $\approx$ 7.28, which corresponds to a lake size of roughly 1451 acres. That is, the model estimates that year-on-year decline in YOY recruitment rates is larger in lakes smaller than 1451 acres, while the decline in larger lakes is less severe. 
+
+Finally, as stated in the previous section, a Durbin-Watson test on the zero-inflated JUV model yielded evidence of positive autocorrelation for JUV recruitment. Usually, this result would motivate model reformulation (e.g., some form of time series model). If the goal was predicting future walleye recruitment, then fitting such a model would almost certainly reduce out-of-sample error. However, given the research questions guiding this project, reformulation risks 'controlling out' the exact effect the model is intended to detect. The direct meaning of this result is that increased JUV recruitment in a given year tends to be related to higher JUV recruitment in subsequent years, though the exact nature of this relationship is less clear. Neither of the JUV model's year coefficients are significant, which suggests that there is insufficient evidence to conclude on the existence of an overall trend JUV recruitment. A plausive explanation for this apparent mismatch is that, as shown in the plot below, JUV recruitment varied within a narrow range from the mid-90's to the early 2010's. However, like the pre-1996 period, the post-2011 period has seen a slight rise in mean recruitment rates which could easily return to baseline levels in the near future. In other words, the apparent positive autocorrelation could well be an artifact of JUV recruitment's small variance and a few unusually high-recruitment years happening close together.
+
+While the apparent downward trend in YOY recruitment is concerning at first blush---especially since 152 out of 169 lakes in the dataset used to fit the negative binomial model were below the log-acreage threshold given above---reading too much into this might not be warranted. Or, at the very least, there are reasons to hold out for further research before drawing strong conclusions. First and foremost, "[s]poradic recruitment is common for walleye populations both within and among individual lakes" since "successful recruitment occurs in a given lake every 3-4 years" [@Rep2016, *pp. 38*]. While the 2016 WDNR report found that "YOY walleye densities have declined significantly over time in both natural [...] and stocked [...] model lakes since 1990" [@Rep2016, *pp. 39*], it also noted that "mean recruitment varies dramatically from year to year when data from all lakes are combined" [@Rep2016, *pp. 38*] and the model used to reach these conclusions was limited to the lake's walleye stocking model, year, and the interaction between the two. To be sure, this is meaningful evidence in support of the decline detected by my models, though the analysis I will present in the next section further complicates this narrative.
+
+Second, specifically in the context of Wisconsin walleye populations, it is not at all clear that models such as the ones used by WDNR or those presented here have any capacity for inference---or, at least, in a durable inference---due to current data collection methods. Hansen et al. [-@Hansen2015a] note, that "the predictive capacity of published environment–recruitment correlations have been formally tested using new data, these correlations break down with “disturbing regularity”," citing, "[f]or example, [that] models that rely upon adult stock size to predict recruitment would have limited utility in forecasting recruitment in a large number of lakes, because estimating adult populations is costly and doing so in all lakes in a single year would be impossible" (pp. 662). Consider the two plots below, which shows mean walleye recruitment by year. An analysis using data from 2006 and before would show a strong positive trend in YOY recruitment. However, during the post-2006 period, WDNR has sampled a higher percentage of lakes only once (62\% pre-2006 vs. 88\% post-2006) but despite these lakes being more variable in size ($\frac{Var(\text{Acreage}_{Post-06})}{Var(\text{Acreage}_{Pre-06})}=$ 1.55), they had lower ($\frac{Avg(\text{YOY Per Acre}_{Post-06})}{Avg(\text{YOY Per Acre}_{Pre-06})}=$ 0.42) and less varied ($\frac{Var(\text{YOY Per Acre}_{Post-06})}{Var(\text{YOY Per Acre}_{Pre-06})}=$ 0.46) YOY density. In other words, the current trend could be due in part to the irregular and random structure of WDNR's electrofishing sampling; they could simply have sampled a higher-than-normal proportion of lakes of various sizes in which YOY density is below average.
+
+```{r math, eval=F, include=F, echo=F, message=F}
+fish %>%
+  group_by(ifelse(year<=2006, 0, 1)) %>%
+  summarize(mean(size_acre),
+            mean(yoy_per_acre),
+            v1=var(size_acre),
+            v2=var(yoy_per_acre),
+            n=n(),
+            u=length(unique(wbic)),
+            r=u/n) 
+
+1141036.4/737900.4
+
+0.1074803/0.2326931	
+
+0.1602195/0.3852070
+
+```
+
+```{r time-plot-2, echo=F, message=F, results='hide', fig.cap="Mean Walleye Recruitment per Shoreline Meter Surveyed By Age and Year"}
+year_line_p <- fish %>%
+  group_by(year) %>%
+  mutate(m = mean(yoy_per_meter),
+         mj = mean(juv_catch/(meters_surv))) %>%
+ggplot(aes(x=year))+
+  geom_line(aes(y=m, col=ggplotColours(2)[1]), size=1.1) +
+  geom_line(aes(y=mj, col=ggplotColours(2)[2]), size=1.1) + 
+  scale_color_manual(values=ggplotColours(2),
+                     labels=rev(c("YOY",
+                              "JUV")),
+                     name="Recruitment") +
+  labs(x="Year", y="Walleye Per Meter",
+       title="Mean Walleye Recruitment per Shoreline Meter\nby Fish Age and Year") +
+  theme_general
+
+year_line_p
+
+```
+
+```{r time-plot-3, echo=F, message=F, results='hide', fig.cap="Log(YOY Caught) vs. Log(Acreage) by Year"}
+year_point_p <- fish %>%
+  group_by(year) %>%
+  mutate(l=log(yoy_catch),
+         m = mean(yoy_per_meter),
+         mj = mean(juv_catch/(meters_surv))) %>%
+  filter(l>-Inf) %>%
+ggplot(aes(x=log(size_acre)))+
+  geom_point(aes(y=l, col=year))+
+  scale_color_gradient(low=ggplotColours(2)[1],
+                        high=ggplotColours(2)[2],
+                       name="Year") +
+  labs(x="Log(Acreage)", y="Log(YOY Recruited)",
+       title="YOY Recruitment \nby Log(Acreage) and Year") +
+  theme_general +
+  ylim(c(0, 10))
+
+year_point_p
+
+```
+
+## Lake Types
+
+In the YOY negative binomial model, three lake type and/or water clarity effects were found to have significant coefficients, indicating that these types of lakes had significantly different intercepts from the baseline levels, which were drainage-type and low-clarity lakes, respectively. All three significant coefficients involved seepage lakes, which are lakes with no inlet or outlet for water. Seepage lakes with low water clarity had significantly lower baseline YOY capture rates than low-clarity drainage lakes, while seepage lakes with moderate or very clear water had higher baseline YOY capture rates. Though, as can be seen from the confidence intervals in the plot below, there is not evidence of a difference between lake types for a given water clarity level, a pattern which aligns with existing literature. In the aftermath of the long drought period between 2002--2008 in Wisconsin, the 2008--2009 WDNR report found that "YOY collected per mile of shoreline electrofished was significantly greater in drainage lakes [...] than seepage lakes [...] since 1990," though "the similar and coincidental decline in YOY abundance under drought conditions in both drainage and seepage lakes does suggest a possible climatic or environmental factor influencing walleye reproduction in all lakes across northern Wisconsin" [@Rep2009, *pp. 49*]. In other words, there is no evidence of significant change for these factors in the period between the end of the aforementioned drought and the data used here.
+
+```{r nb-yoy-coef-plot, echo=F, message=F, warning=F, results='hide', fig.cap="Lake Type Coefficients for YOY Negative Binomial Model"}
+plot_model(g2, show.values = T, 
+           show.intercept = T,
+           value.offset = 0.3, 
+           auto.label = F,
+           vline.color = "grey60",
+           axis.labels = rev(c("Lake Type: Seepage",
+                           "Lake Type: Spring",
+                           "Clarity: Moderate",
+                           "Clarity: Very Clear",
+                           "Lake Type: Seepage*Clarity: Moderate",
+                           "Lake Type: Spring*Clarity: Moderate",
+                           "Lake Type: Seepage*Clarity: Very Clear",
+                           "Lake Type: Spring*Clarity: Very Clear")),
+           title = "Coef. Estimates with CIs (YOY)",
+           rm.terms = c("(Intercept)",
+                        "log_size_acre",
+                        "as.numeric(temp_survey)",
+                        "I(s_year)",
+                        "I(s_year^2)",
+                        "log_size_acre:I(s_year)",
+                        "log_size_acre:I(s_year^2)")) +
+  theme_general+
+  theme(axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray80"),
+        panel.grid.minor.x = element_line(color = "gray80")) +
+  labs(y=expression(paste("Incidence Rate Ratios (",
+                          e^hat(beta)[j], 
+                          ")")))
+```
+
+```{r int-plot-g2, echo=F, message=F, warning=F, fig.cap="Predicted Values for Lake Type/Water Clarity Interaction (YOY Model)"}
+
+plot(ggpredict(g2, terms=c("lake_type", "clarity"))) +
+  theme_general +
+  scale_color_manual(values=ggplotColours(3),
+                     labels=c("Low", "Moderate",
+                              "Very Clear"),
+                     name="Water Clarity") +
+  labs(y="YOY Caught",
+       x="Lake Type",
+       title="Predicted Values of YOY Caught by Lake Type and Water Clarity")
+
+```
+
+Given the lack of a temporal trend found for JUV walleye, any lake type/water clarity pattern is likely to instead reflect pre-existing differences between lakes and lake types. The coefficient plot below shows that all spring lake---which have an outlet but no inlet---were found to be significant; low-clarity spring lakes had lower baseline JUV catch rates relative to low-clarity drainage lakes, while moderate and high-clarity spring lakes had higher JUV catch rates. In addition, very clear drainage lakes had low JUV catch rates, while moderate and very clear seepage lakes had higher JUV catch rates, similar to the YOY model. This set of results is somewhat surprising in that it contrasts with Hansen et al's [-@Hansen2015a] random forest model, which found that hydraulic type was among the least important factors in determining a lake's walleye population (mean importance: 9.27/100) (pp. 665). However, given the lack of evidence for a temporal trend in JUV recruitment, one plausible explanation for this result is that the lake type and water clarity terms are capturing the effects of temperature, since lake types are dispersed unequally across Wisconsin's latitudes [@Rep2009]. These different latitudes have felt differential effects from climate change, though the trends have been relatively constant across similar latitudes [@Hansen2017]. 
+
+```{r zinb-yoy-coef-plot, echo=F, message=F, results='hide', fig.cap="Lake Type Coefficients for JUV Model."}
+plot_model(zi_nb_j, show.values = T,
+           show.zeroinf = F,
+           show.intercept = T,
+           value.offset = 0.3,
+           auto.label = F,
+           vline.color = "grey60",
+           axis.labels = rev(c(
+                           "Lake Type: Seepage",
+                           "Lake Type: Spring",
+                           "Clarity: Moderate",
+                           "Clarity: Very Clear",
+                           "Lake Type: Seepage*Clarity: Moderate",
+                           "Lake Type: Spring*Clarity: Moderate",
+                           "Lake Type: Seepage*Clarity: Very Clear",
+                           "Lake Type: Spring*Clarity: Very Clear")),
+           title = "Conditional Coef. Estimates with CIs (JUV)",
+           rm.terms = c("(Intercept)",
+                        "log_size_acre",
+                        "temp_survey",
+                        "I(s_year)",
+                        "I(s_year^2)")) +
+  theme_general+
+  theme(axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray80"),
+        panel.grid.minor.x = element_line(color = "gray80")) +
+  labs(y=expression(paste("Incidence Rate Ratios (",
+                          e^hat(beta)[j], 
+                          ")")))
+```
+
+```{r lake-effects, message=F, echo=F, results='hide', fig.height=2, fig.cap="Zero Inflation Model Coefficients for JUV Model."}
+
+plot_model(zi_nb_j, show.values = T,
+           value.offset = 0.3,
+           axis.labels = rev(c("Intercept",
+                           "ln(Acreage)")),
+           show.intercept=T, 
+           grid=F,
+           vline.color = "grey60")$zero_inflated +
+  theme_general+
+  theme(axis.ticks.y = element_blank(),
+        panel.grid.major.y = element_blank(),
+        panel.grid.major.x = element_line(color = "gray80"),
+        panel.grid.minor.x = element_line(color = "gray80")) +
+  labs(y="Log Odds Ratio",
+       title = "Zero-Inflation Coefficient Estimates with Confidence Intervals")
+
+```
+
+```{r int-plot-zinb, echo=F, message=F, warning=F, fig.cap="Predicted Values for Lake Type/Water Clarity Interaction for JUV Model."}
+plot(ggeffect(zi_nb_j,
+              terms=c("lake_type", "clarity"),
+              type="fe.zi")) +
+  scale_color_manual(values=ggplotColours(3),
+                     labels=c("Low", "Moderate",
+                              "Very Clear"),
+                     name="Water Clarity") +
+  labs(y="JUV Caught",
+       x="Lake Type",
+       title="Predicted Values of JUV Caught by Lake Type and Water Clarity") +
+  theme_general
+
+```
+
+# Discussion & Conclusion
+
+The results clearly suggest that something is changing with Wisconsin's age-0 and age-1 walleye populations, though the exact details of what remain tenuous. The finding that the state's age-0 walleye populations appear to be declining is not new. The limitations of my analysis notwithstanding, these findings are best viewed in the wider context of declining biodiversity in a changing climate. Yet the fact that this decline in wildlife populations---walleye and others---seems to be increasingly rapid is a mere footnote outside of academic and conservation circles. Even there, it seems to be a foregone conclusion as authors debate how to address the magnitude of this escalating decline [@Hansen2017] or the interaction of this decline between populations [@HansenBayes]. Similarly, much of the explicit discussion about age-1 and older walleye has been limited trends in fish size [@Ped2018] or broader fisheries management [@Hansen2015b].
+
+Two major limitations of this analysis concern holes in the provided data. First WDNR manually stocks certain lakes with walleye, while others are naturally stocked. These different stocking methods have some effect on age-0 and walleye populations, and the effect of these stocking methods on walleye has changed across years [@Rep2016]. The stocking status of each lake was not included in the data set with which this project was prepared, but offers a possible extension of the research presented here. Similarly, the extent to which fisheries are exploited is a significant factor in their sustainability. While a certain amount of fishing is allowed by law, over-fishing can drop fisheries below replenishment level leading to long-term declines in recruitment. WDNR estimates exploitation levels broadly for use in setting harvest levels, and fishing is explicitly restricted in low-population lakes [@Rep2016]. Data on the exploitation level of the lakes analyzed would allow me to determine how much of the apparent decline in age-0 walleye populations is concentrated in lakes with over-exploited walleye populations.
+
+Perhaps the most concerning result, though, is the shift in baselines. Much of the previous section was concerned with rates of change. However, the final part---on baseline recruitment in lake types---begs a major question: what were the walleye populations like in Wisconsin's lakes before WDNR began collecting data in 1990? If the caveats discussed above are merely incidental and walleye stocks are indeed declining, then Wisconsin may well be experiencing an increasingly common phenomenon: shifting baselines.
+
+> [W]hat we think of as normal and healthy--the baseline--has had to shift to keep up with reality. Our picture of the environment becomes skewed, as we forget what used to be and adjust unconsciously to a diminished present. [...] We adjust our baseline to the new level, and we don’t recall what was there. If you generalize this, something like this happens. You have on the y axis some good thing: biodiversity, numbers of orca, the greenness of your country, the water supply. And over time it changes — it changes because people do things, or naturally. Every generation will use the images that they got at the beginning of their conscious lives as a standard and will extrapolate forward. And the difference then, they perceive as a loss. But they don’t perceive what happened before as a loss. You can have a succession of changes. At the end you want to sustain miserable leftovers. [@Base]
+
+# References
+
+<div id="refs"></div>
+
+# Appendix: Binomial Classifier for Sustainable YOY Recruitment
+
+```{r binom-FE-YOY, eval=F, echo=F, message=F, include=F}
+b <- glm(recruit_yoy~
+             I(s_year)+I(s_year^2)+
+             (size_acre+
+             temp_survey)+
+             max_depth_m+
+             lake_type*
+             Secchi_satellite+
+             Conductance+
+             gdd_wtr_5c+
+             mean_bot_jun ,
+    data=fish_sc, family = binomial(link="logit"),
+    contrasts =list(lake_type=c('contr.sum','contr.poly')))
+```
+
+```{r binom-lake-RE-YOY, echo=F, message=F, include=F}
+
+b2 <- glmer(recruit_yoy~
+             I(s_year)+I(s_year^2)+
+             size_acre+
+             temp_survey+
+        #(1|f_year)+
+        (1|wbic), 
+      data=ft, nAGQ=0,
+      family = binomial(link="logit"), 
+      control = glmerControl(optimizer ='optimx',
+                optCtrl=list(method='L-BFGS-B')))
+
+```
+
+```{r prob-stuff, echo=F, message=F, include=F}
+probabilities <- predict(b2, type = "response")
+predicted.classes <- ifelse(probabilities > 0.5, "pos", "neg")
+
+mydata <- fish %>%
+  dplyr::select_if(is.numeric) %>%
+  dplyr::select(temp_survey, size_acre, year) %>%
+  mutate(size_acre = log(size_acre))
+predictors <- colnames(mydata)
+
+# Bind the logit and tidying the data for plot
+mydata <- mydata %>%
+  mutate(logit = log(probabilities/(1-probabilities))) %>%
+  gather(key = "predictors", value = "predictor.value", -logit)
+
+ggplot(mydata, aes(logit, predictor.value))+
+  geom_point(size = 0.5, alpha = 0.5) +
+  geom_smooth(method = "loess") + 
+  theme_bw() + 
+  facet_wrap(~predictors, scales = "free_y")
+
+# Need to log(size_acre)
+```
+
+```{r chisq, cache=T, eval=F, echo=F, message=F, include=F}
+
+set.seed(99)
+folds <- createFolds(1:nrow(ft), k=2)
+
+v <- valid(formula(b2), ft, folds)
+ftable(v~ft$lake_type)
+ftable(v~ft$clarity)
+
+sum(v)/length(v)
+
+```
+
+```{r roc, eval=F, cache=T, echo=F, message=F, include=F}
+
+v_me <- model.valid.re(data.re=ft,
+                       fit.re=b2,
+                       B=500,
+                       seed=40)
+
+save(v_me, file="data.Rdata")
+
+```
+
+```{r roc-test, cache=T, echo=F, message=F, include=F}
+
+load(file="data.Rdata")
+roc_tibble <- v_me[["roc_tibble"]]
+one_test_tibble <- v_me[["one_test_tibble"]]
+
+# ks.test() - test whether p-values are uniformly distributed
+# One-ROC
+ks.train.me <- one_test_tibble %>%
+  dplyr::filter(train_or_test=="train") %>%
+  dplyr::select(p.value) %>%
+ks.test("punif", alternative = "g") %>% 
+  tidy() %>%
+  add_column(train_or_test="train")
+
+ks.test.me <- one_test_tibble %>%
+  dplyr::filter(train_or_test=="test") %>%
+  dplyr::select(p.value) %>%
+ks.test("punif", alternative = "g") %>% 
+  tidy() %>%
+  add_column(train_or_test="test")
+
+ks.tibble <- rbind(ks.train.me, ks.test.me) %>%
+  dplyr::select(-method, -alternative) %>%
+  dplyr::mutate(train_or_test = dplyr::recode(train_or_test,
+                                       train="Train",
+                                       test="Test")) %>%
+  dplyr::rename("Test Statistic" = statistic,
+                "P-value" = p.value,
+                "Data"=train_or_test)
+
+
+
+```
+
+## Motivation & Model
+
+The main body of this project focuses on estimating mean YOY/JUV walleye populations. Here, I include supplementary analysis based on the age-0 (known as young-of-the-year, or YOY) walleye sustainability threshold identified in Hansen et al. [-@Hansen2015a; also, @Hansen2004], who identify an electrofishing survey recruitment rate of 6.2 YOY walleye per km of shoreline as the critical threshold for walleye population sustainability. In particular I expanded the application of this threshold beyond random forest models [@Hansen2017] and Bayesian hierarchical GLMs [@HansenBayes] via Monte Carlo receiver operating characteristic (ROC) curve simulation to assess the discriminatory capabilities of a relatively simple binomial generalized linear mixed-effects model using limited data in predicting Hansen et al.'s [-@Hansen2004] recruitment classifier. The guiding research question of this analysis was whether such a model could produce AUC values significantly larger than the AUC of a "naive guess" ROC curve. In other words, can a relatively simple model meaningfully predict whether a given YOY recruitment will be successful given limited information? If so, this simple classifier could be used to further prioritize lake measurement and conservation actions when used in tandem with existing WDNR methods.
+
+The model was based on the log-normal models found in WDNR's annual Ceded Territory fishery assessment reports. In that spirit, the model included a fixed effect for the natural logarithm of lake size (in acres) and a random effect for each lake. There are two differences between my ME model and the log-normal WDNR model. First, because the ME model is not intended to estimate mean walleye *population* (as is the case for WDNR's log-linear model), but rather to predict the whether YOY walleye are *sampled* ("recruited") at a rate indicating sustainability, I additionally control for the effect of survey temperature due to the effect it has on sampling rates [@Hansen2015a]. Further, I included a quadratic fixed-effect term for survey year (in addition to the linear term in the WDNR model) in order to account for changes in the overall trend of walleye recruitment. The final model was parameterized as follows:
+
+\begin{align*}
+ln\left( \frac{\pi_{i\ell}}{1-\pi_{i\ell}} \right) &= \beta_0 + \alpha_\ell + \beta_1 ln(\text{Acreage}_i) + \beta_2 \text{Survey Temperature}_i\\
+&\qquad + \beta_3 \text{(Years after 1990)}_i + \beta_4 \text{(Years after 1990)}^2_i
+\end{align*}
+
+It is worth setting out the motivation for testing the accuracy of the models using receiver operating characteristic (ROC) curves. Simply put, even though the dataset contains a balanced successful/unsuccessful recruitment ratio, it is likely that the ratio is unbalanced across all lakes. This is even more likely when accounting for the presence of unreliable surveys, which were removed from the dataset for this analysis. Mere accuracy is not enough for a model to be worth considering when successes and failures are unbalanced in the population; given a different dataset with proportion of successful recruitments $p$, naively guessing that a recruitment was successful (if $p>0.5$) or unsuccessful (if $p<0.5$) will yield better-than-random accuracy. ROC curves plot the cumulative true positive rate ("sensitivity") against the cumulative true negative rate ("specificity") for the model, and the resulting curve can be thought of as the model's power as a function of its type I error. That is, ROC curves measure the probability of detecting true positives with respect to the probability of detecting false positives. The area under the ROC curve (AUC) corresponds to the probability that the model will assign a random true positive response a predicted probability of being a success higher than a random true negative response, reflecting how well the model discriminates between the two. The table below more explicitly shows what ROC curves measure.
+
+\begin{table}[!h]
+\begin{minipage}{0.6\textwidth}
+\begin{tabular}{|c || c c|}
+\multicolumn{3}{c}{~~~~~~~~~~~~~~~~~~~~~\textit{Recruitment Outcome}}  \\ \hline
+\textit{Truth} & Successful & Unsuccessful\\
+\hline
+Above Threshold & True Positive (TP) & False Negative (FN) \\
+Below Threshold & False Positive (FP) & True Negative (TN) \\
+\hline
+\end{tabular}
+\caption{Recruitment Versus "True" YOY Level Classifications}
+\end{minipage}
+\begin{minipage}{0.3\textwidth}
+\vspace{-.5cm}
+\begin{align*}
+\text{True Neg. Rate} = \frac{TN}{FP+TN}&\\
+\text{True Pos. Rate}=\frac{TP}{TP+FN}&
+\end{align*}
+\end{minipage}
+\end{table}
+
+## Statistical Analyses
+
+A series of 1000 ROC curves were used to assess the two models' discriminatory capacities (certain details left for Appendix III). For each iteration, the model was randomly divided into training and testing datasets with a 70/30 split. Both models were fit on the training dataset. Each model was used to predict the probability of successful recruitment on both the training and testing datasets (separately). Then, ROC curves were fit for each model's predictions on each dataset, resulting in four ROC curves. In order for the models to meaningfully improve on random guessing, they have to out-perform the baseline true positive rate, which happened to be exactly 0.5 in the full dataset. In other words, the models are worth considering if they perform measurably better than a coin flip. These ROC curves are shown below.
+
+```{r roc-plot, echo=F, message=F, warning=F, fig.cap="ROC Curve on Training and Test Datasets"}
+# Plot ROC by train/test
+p_roc_curves <- ggplot(data=roc_tibble,
+       aes(x=(1-mean_spec), y=mean_sens,
+           group=train_or_test)) +
+  geom_line(show.legend = F) +
+  geom_ribbon(aes(ymin=L_sens, ymax=U_sens,
+                  fill=train_or_test), alpha=0.5) +
+  stat_function(fun=punif, lty=3) +
+  labs(title="ROC by Dataset",
+       x="(1-Mean Specificity)",
+       y="Mean Sensitivity") +
+  scale_fill_manual(values=ggplotColours(n=2),
+                        labels=c("Test", "Train"),
+                        name="Data") +
+  theme_general
+
+p_roc_curves
+```
+
+The modified Mann--Whitney $U$ test for ROC curves detailed by Mason and Graham [-@Mason] was performed on the curve for each iteration. In short, this test is based on the fact that ROC curves act as rankings for predicted probabilities ("scores"); in better-than-random ROC curves, high scores should correspond to successful recruitments. Under the null hypothesis, a given ranked score should have equal probability of belonging to a successful or unsuccessful recruitment; this corresponds to an ROC curve unable to separate the two classes of recruitment. The null distribution of the p-values for the Mann--Whitney $U$ test is a standard uniform distribution, and this was tested for each model--dataset combination via a one-sample Kolmogorov-Smirnov test for the equality of distributions. The alternative hypothesis for the Kolmogorov-Smirnov test was that the empirical distribution function of the p-values lies above a standard uniform cumulative distribution function. In short, rejecting the null hypothesis here means that the $U$ tests produced substantially more small p-values than expected if the p-values were uniformly distributed. This, in turn, would provide evidence that the ROC curves distinguished true successful recruitments from true unsuccessful recruitments at a rate significantly higher than naive guessing.
+
+## Results
+
+The distribution of p-values for the 1000 Mann--Whitney $U$ tests is given below. Also shown is a plot showing the empirical distribution function of the p-values with the cumulative distribution function of a standard uniform distribution.^[Confidence intervals for the empirical distribution functions calculated using the Dvoretzky--Kiefer--Wolfowitz inequality found in Dvoretzky et al. [@ECDF].] As expected, the model always yields better-than-random discrimination between successful and unsuccessful recruitments for the training data; this is an uninteresting and obvious result, but it is included here for reference. The distribution of p-values on the test set is also visibly non-uniform, as was confirmed by the results of the Kolmogorov-Smirnov test, given in the table below. Note that the p-values are only *approximately* zero, due in large part due to the sample size ($B=1000$).
+
+```{r ecdf, echo=F, message=F, warning=F, fig.cap="Top: Distribution of Mann--Whitney U Test P-Values by Dataset\newline Bottom: Empirical and Theoretical Cumulative Distribution Functions for Mann--Whitney U Test P-Values"}
+# Distribution of roc.area() p-values (One-ROC test)
+one_test_p <- one_test_tibble %>%
+ggplot(aes(p.value, fill=train_or_test)) +
+  geom_histogram(alpha=0.5, position="identity") + 
+  theme_general +
+  labs(title="Distribution of ROC Test P-Values",
+       x="P-value", y="Frequency") +
+  scale_fill_manual(values=ggplotColours(n=2),
+                    labels=c("Test", "Train"),
+                    name="Data")
+
+# ECDF - one-ROC test
+ecdf_one_test <- one_test_tibble %>%
+  mutate(e_c = ecdf(p.value)(p.value))
+
+mx_dif_one <- ecdf_one_test %>% 
+  slice(which.max(abs(ecdf(p.value)(p.value)-punif(p.value))))
+
+eps_one <- sqrt((1/(2*nrow(one_test_tibble)))*log(2/0.05))
+
+one_test_ecdf_p <- ecdf_one_test %>%
+  dplyr::filter(train_or_test=="test") %>%
+ggplot(aes(x=p.value)) +
+      geom_step(stat="ecdf") +
+      geom_ribbon(aes(x=p.value, 
+                      ymin=pmax(..y..-eps_one, 0), 
+                      ymax=pmin(..y..+eps_one, 1),
+                      fill=train_or_test),
+                  stat="ecdf", alpha=0.3, lty=0,
+                  show.legend = F) +
+      theme_general +
+      stat_function(fun=punif, lty=3,
+                    col="black",
+                    show.legend = F) +
+      labs(title = "U-Test P-Values on Test Dataset",
+           subtitle = "ECDFs vs. CDF with Maximum Vertical Difference",
+           x="P-value", y="Cumulative Density") +
+  geom_segment(data=mx_dif_one,
+                 aes(x = p.value, xend=p.value,
+                     yend=e_c,
+                     y=qunif(p.value)), lty = 2) +
+  scale_linetype_manual(values=c(1, 3, 2),
+                        labels=c("ECDF", "Theoretical CDF",
+                                 "Maximum Difference")) +
+  xlim(c(0, 1))
+
+plot_grid(one_test_p, one_test_ecdf_p, nrow=2,
+          rel_heights = c(3/7, 4/7))
+```
+
+The result of the Kolmogorov-Smirnov test shows that the model outperforms naive guessing, both on the training set---an unsurprising result---and on the test set. This means, directly, that the distribution of the p-values for the Mann-Whitney $U$ tests was disproportionately small relative to the assumed null uniform distribution. This further implies that the Mann-Whitney $U$ tests found substantial evidence in support of the model's discriminatory capabilities for novel data and, in turn, provides substantial evidence that the model can meaningfully predict whether a novel recruitment will be successful or unsuccessful. This result suggests that the model outlined in this appendix can meaningfully supplement existing WDNR walleye population models.
