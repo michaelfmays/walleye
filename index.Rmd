@@ -26,7 +26,7 @@ in-header:
   - \usepackage{etoolbox}
 ---
 
-```{r setup, include=FALSE}
+```{r setup, echo=T, include=T, message=F, warning=F}
 knitr::opts_chunk$set(echo = F, message=F,
                       warning=F, fig.width=10,
                       out.width="\\linewidth")
@@ -53,9 +53,10 @@ library(sjPlot)
 library(cowplot)
 library(ggeffects)
 
-source("helper_functions.R")
-source("data.R")
+source("helper_functions.R") # Various functions created for use in this project
+source("data.R") # All of the data reading/cleaning/etc
 
+# Just some ggplot theme options I tend to like
 theme_general <- theme(panel.background = 
                          element_rect(fill="white"),
                        plot.background = 
@@ -91,93 +92,6 @@ theme_general <- theme(panel.background =
 
 ```
 
-```{r poi YOY, echo=F, message=F, include=F}
-# Poisson
-gpoi <- glm(yoy_catch~
-            offset(log(meters_surv))+
-            size_acre+
-            year+
-            temp_survey+
-            lake_type*
-            clarity+
-            gdd_wtr_5c,
-    data=fish_sc, family = poisson)
-```
-
-```{r normal YOY and Juv, cache=T, echo=F, message=F, include=F}
-# Normal errors, random effect for year
-g <- lmer(log(yoy_catch+juv_catch)~
-            I(s_year) +
-            I(s_year^2) +
-            (1|wbic)+
-            log(size_acre), 
-          data=fish_nz)
-
-s_norm <- summary(g)
-
-```
-
-```{r NB FE YOY, cache=T, echo=F, message=F, include=F}
-# Negative binomial model
-gnb0 <- glm.nb(yoy_catch~
-                offset(log_km_surv)+
-                log_size_acre*
-                (I(s_year)+
-                I(s_year^2))+
-                temp_survey+
-                lake_type*
-                clarity, 
-               data=fish_sc, na.action = na.omit)
-
-g2 <- glm(yoy_catch~
-            offset(log_km_surv)+
-            log_size_acre*
-            (I(s_year)+
-            I(s_year^2))+
-            as.numeric(temp_survey)+
-            lake_type*
-            clarity
-    , data=fish_sc,
-    family = neg.bin(gnb0$theta),
-    control = list(maxit = 30), na.action = na.omit)
-
-
-s_nb_yoy <- summary(g2)
-```
-
-```{r NB lake RE YOY, cache=T, echo=F, message=F, include=F}
-
-# Negative binomial model - mixed effects
-gnb <- glmer.nb(yoy_catch~
-                offset(log_km_surv)+
-                log_size_acre+
-                I(s_year)+
-                I(s_year^2)+
-                temp_survey+
-                lake_type*
-                Secchi_satellite+
-                (1|wbic)
-           , data=fish_sc,
-           nAGQ=0,
-           control=glmerControl(optimizer="bobyqa"))
-
-# Degenerate hessian w 1 neg eigenvalue
-g1 <- glmer(yoy_catch~
-            offset(log_km_surv)+
-            log_size_acre+
-            I(s_year)+
-            I(s_year^2)+
-            temp_survey+
-            lake_type*
-            Secchi_satellite+
-            (1|wbic),
-    data=fish_sc, 
-    family = MASS::negative.binomial(getME(
-      gnb, "glmer.nb.theta"), link = "log"), 
-    control=glmerControl(optimizer="bobyqa"))
-
-```
-
 ```{r NB CIs YOY, eval=F, echo=F, message=F, include=F}
 ci_sig <- confint(g1, 
                method = "boot",
@@ -187,59 +101,6 @@ ci_sig <- confint(g1,
                parm = ".sig01", 
                parallel = "multicore",
                ncpus = 4, .progress="win")
-```
-
-```{r NB lake RE JUV, cache=T, echo=F, message=F, include=F}
-# Only use this chunk to show zero inflation
-# Negative binomial model - mixed effects
-gnbj <- glmer.nb(juv_catch~
-                offset(log_km_surv)+
-                log_size_acre+
-                I(s_year)+
-                I(s_year^2)+
-                temp_survey+
-                lake_type*
-                Secchi_satellite+
-                (1|wbic)
-           , data=fish_sc,
-           nAGQ=0,
-           control=glmerControl(optimizer="nloptwrap"))
-
-# Degenerate hessian for random effects
-# Neither random effect has variance distinguishable from 0
-g1j <- glmer(juv_catch~
-            offset(log_km_surv)+
-            log_size_acre+
-            I(s_year)+
-            I(s_year^2)+
-            temp_survey+
-            lake_type*
-            Secchi_satellite+
-            (1|wbic),
-    data=fish_sc, 
-    family = MASS::negative.binomial(getME(
-      gnbj, "glmer.nb.theta"), link = "log"), 
-    control=glmerControl(optimizer="nloptwrap"))
-
-```
-
-```{r ZI NB lake RE JUV, cache=T, echo=F, message=F, include=F}
-
-zi_nb_j <- glmmTMB(juv_catch~
-                offset(log_km_surv)+
-                log_size_acre+
-                I(s_year)+
-                I(s_year^2)+
-                temp_survey+
-                lake_type*
-                clarity+
-                (1|wbic),
-                data=fish_sc,
-        ziformula = ~1+log_size_acre,
-        family = "nbinom2")
-
-s_zinb_juv <- summary(zi_nb_j)
-
 ```
 
 # Background & Introduction
@@ -272,12 +133,19 @@ The data set analyzed included measurements of 14 variables for each of 171 Wisc
 * the mean temperature at the bottom of the lake (in degrees C) in June for the survey year; and
 * ice duration days, which is the length of time (in days) the lake spent iced over in the survey year.
 
+```{r cache=FALSE, echo=FALSE}
+knitr::read_chunk('data.R')
+```
+
+```{r data.R, eval=FALSE, include=T, echo=T, message=T}
+
+```
+
 There were no duplicated lake-years.
 
 ```{r, echo=T}
 sum(duplicated(fish[,c(1,3)]))
 ```
-
 
 One observation was removed before analysis: the Big Eau Pleine Reservior data from survey year 2003, which is the only survey for which water clarity was "very low". Low water clarity reduces survey reliability by making walleye less easily found and thus less catchable, resulting in inconsistent samples [@Hansen2015a]. For similar reasons, Hansen et al. [-@Hansen2015a] finds surveys conducted at temperatures below 10 degrees C or above 21 degrees C can be unreliable, but the dataset contained no such surveys.
 
@@ -348,7 +216,22 @@ I fit two models to assess YOY recruitment and one to assess JUV recruitment. Th
 
 ## Log-Normal (YOY)
 
-The first replicates the log-normal mixed-effects model fit by WDNR in its annual Ceded Territory Fishery Assessment Reports [see, e.g., @Rep2016] with lake-specific effects and the natural logarithm of lake acreage as predictors. However, there are three important differences between my log-normal mixed model and WDNR's. First, WDNR uses separate models for lakes in which walleye populations are maintained through natural reproduction, through government walleye stocking, and for low population density lakes with irregular natural reproduction patterns; this data was not available to me. Second, the response variable in WDNR's model is the estimated population of a lake, which is estimated with the Chapman-modified Petersen Estimator [see @Rep2016, *pp. 5*], data which was also unavailable to me. Instead, I use the natural logarithm of the surveys' total captures (YOY plus juveniles caught) as the response variable, with zero-valued totals removed from the dataset before fitting the data. Third, the model used here adds a quadratic fixed effect coefficients for year (or, more specifically, years since 1990, which is the earliest survey for which data is available). The WDNR model only contains a linear term, and it is treated as a factor while mine is used as a continuous variable; these changes help the model fit the goals of this project, and increases commensurability between the log-normal model and the other models fit in this project. The overall purpose of the log-normal model is to serve as a baseline against which to compare the other models. This model is parameterized as:
+The first replicates the log-normal mixed-effects model fit by WDNR in its annual Ceded Territory Fishery Assessment Reports [see, e.g., @Rep2016] with lake-specific effects and the natural logarithm of lake acreage as predictors. However, there are three important differences between my log-normal mixed model and WDNR's. First, WDNR uses separate models for lakes in which walleye populations are maintained through natural reproduction, through government walleye stocking, and for low population density lakes with irregular natural reproduction patterns; this data was not available to me. Second, the response variable in WDNR's model is the estimated population of a lake, which is estimated with the Chapman-modified Petersen Estimator [see @Rep2016, *pp. 5*], data which was also unavailable to me. Instead, I use the natural logarithm of the surveys' total captures (YOY plus juveniles caught) as the response variable, with zero-valued totals removed from the dataset before fitting the data. Third, the model used here adds a quadratic fixed effect coefficients for year (or, more specifically, years since 1990, which is the earliest survey for which data is available). The WDNR model only contains a linear term, and it is treated as a factor while mine is used as a continuous variable; these changes help the model fit the goals of this project, and increases commensurability between the log-normal model and the other models fit in this project. The overall purpose of the log-normal model is to serve as a baseline against which to compare the other models.
+
+```{r normal YOY and Juv, echo=T, message=F, warning=F, include=T}
+# Normal errors, random effect for year
+g <- lmer(log(yoy_catch+juv_catch)~
+            I(s_year) +
+            I(s_year^2) +
+            (1|wbic)+
+            log(size_acre), 
+          data=fish_nz)
+
+s_norm <- summary(g)
+
+```
+
+This model is parameterized as:
 
 \begin{align*}
 ln(y_{i\ell}^\prime) &= \alpha_{\ell}^{LN} + \beta_0 + \beta_1 ln(\text{Acreage}_i) + \beta_2 \text{(Years after 1990)}_i + \beta_3 \text{(Years after 1990)}_i^2 + \varepsilon_{i\ell}\\
@@ -366,7 +249,112 @@ Var(ln(y_{i\ell}^\prime)|\boldsymbol{X}_{i\ell}^{LN})= \sigma^2_a+\sigma^2_e
 
 ## Negative Binomial (YOY)
 
-The second YOY model fit was a negative binomial generalized linear model model. Since the response is count data, Poisson regression was an obvious first choice. However, the data had significant overdispersion, even when accounting for lake-specific effects via a Poisson GLMM; a plot showing this overdispersion is given in the next section, which covers diagnostics. Given overdispersion, an obvious second choice was a negative binomial GLMM; the Poisson-Gamma mixture offers an additional dispersion parameter to account for the variance unexplained by the random effect. However, this model fell into the opposite problem: underdispersion due to very nearly observation-level random effects (a nice description of this problem is given by Bolker [-@Stack]). As with the Poisson case, this is shown in the next section. In short, very few lakes in the dataset were sampled in more than one year, and given this particular set of data, the resulting negative binomial GLMM over-fit to an unidentifiable degree. Instead, the lake-specific effects from a mixed-effects model were proxied by the limnological characteristics of each lake, which begs the question of model selection.
+The second YOY model fit was a negative binomial generalized linear model model. Since the response is count data, Poisson regression was an obvious first choice. 
+```{r poi YOY, echo=T, message=F, warning=F, include=T}
+# Poisson
+gpoi <- glm(yoy_catch~
+            offset(log(meters_surv))+
+            size_acre+
+            year+
+            temp_survey+
+            lake_type*
+            clarity+
+            gdd_wtr_5c,
+    data=fish_sc, family = poisson)
+```
+
+However, the data had significant overdispersion, even when accounting for lake-specific effects via a Poisson GLMM; this is shown in the next section, which covers diagnostics. Given overdispersion, an obvious second choice was a negative binomial GLMM; the Poisson-Gamma mixture offers an additional dispersion parameter to account for the variance unexplained by the random effect. However, this model fell into the opposite problem: underdispersion due to very nearly observation-level random effects (a nice description of this problem is given by Bolker [-@Stack]). As with the Poisson case, this is shown in the next section. In addition, very few lakes in the dataset were sampled in more than one year, and given this particular set of data, the resulting negative binomial GLMM over-fit to an unidentifiable degree. 
+
+```{r NB lake RE YOY, cache=T, echo=T, message=F, include=T}
+## Negative binomial model - mixed effects
+# Fit initial model using a quick (but less accurate) algorithm
+#   to use theta estimate
+gnb <- glmer.nb(yoy_catch~
+                offset(log_km_surv)+
+                log_size_acre+
+                I(s_year)+
+                I(s_year^2)+
+                temp_survey+
+                lake_type*
+                Secchi_satellite+
+                (1|wbic), 
+           data=fish_sc,
+           nAGQ=0,
+           control=glmerControl(optimizer="bobyqa"))
+
+# Fit actual model using theta estimate as starting value
+#   (plus more algorithm iterations) to help model convergence
+g1 <- glmer(yoy_catch~
+            offset(log_km_surv)+
+            log_size_acre+
+            I(s_year)+
+            I(s_year^2)+
+            temp_survey+
+            lake_type*
+            Secchi_satellite+
+            (1|wbic),
+    data=fish_sc, 
+    # Use MASS parameterization for consistency
+    family = MASS::negative.binomial(getME(
+      gnb, "glmer.nb.theta"),
+      link = "log"), 
+    control=glmerControl(optimizer="bobyqa"))
+
+```
+
+```{r, echo=F, warning=T, message=F, include=T}
+# Results in degenerate Hessian w/ 1 negative eigenvalue
+glmer(yoy_catch~
+            offset(log_km_surv)+
+            log_size_acre+
+            I(s_year)+
+            I(s_year^2)+
+            temp_survey+
+            lake_type*
+            Secchi_satellite+
+            (1|wbic),
+    data=fish_sc, 
+    # Use MASS parameterization for consistency
+    family = MASS::negative.binomial(getME(
+      gnb, "glmer.nb.theta"),
+      link = "log"), 
+    control=glmerControl(optimizer="bobyqa"))
+```
+
+Instead, the lake-specific effects from a mixed-effects model were proxied by the limnological characteristics of each lake, which begs the question of model selection.
+
+```{r NB FE YOY, cache=T, echo=T, message=F, include=T}
+## Negative binomial model - fixed effects
+# Fit initial model using a quick (but less accurate) algorithm
+#   to use theta estimate
+gnb0 <- glm.nb(yoy_catch~
+                offset(log_km_surv)+
+                log_size_acre*
+                (I(s_year)+
+                I(s_year^2))+
+                temp_survey+
+                lake_type*
+                clarity, 
+               data=fish_sc,
+               na.action = na.omit)
+
+# Fit actual model using theta estimate as starting value
+#   (plus more algorithm iterations) to help model convergence
+g2 <- glm(yoy_catch~
+            offset(log_km_surv)+
+            log_size_acre*
+            (I(s_year)+
+            I(s_year^2))+
+            as.numeric(temp_survey)+
+            lake_type*
+            clarity,
+    data=fish_sc,
+    family = neg.bin(gnb0$theta), 
+    control = list(maxit = 30),
+    na.action = na.omit)
+
+s_nb_yoy <- summary(g2)
+```
 
 Formal model selection for this model was limited; the primary motivations were subject knowledge- and goal-based. The goal was to identify trends in YOY recruitment over time, determine if that trend is constant, and identify the types of lakes in which such a trend is present; a predictor was added only if it addressed one of these goals, or controlled for potential confounding factors. To start with, this model includes all of the fixed-effects coefficients found in the log-normal model. The size of the lake (in acres) is mainly a control (larger lakes tend to have larger fish populations), while the linear and quadratic terms for years after 1990 are key to my research questions. In addition, the model includes fixed effects for the survey temperature (this variable was centered at its mean and scaled by its standard deviation; it is mainly included as a control, so interpretability is not particularly important), plus the lake's hydraulic class and clarity. The former is a control; walleye activity is related to the air temperature on a given survey day [@Hansen2015a, *pp. 662*; @Hansen2004; @Hansen2017]. The latter two main effects are largely controls, and their substantive importance to answering the research questions is mediated by their interaction terms (this is explained below and further detailed in the analysis section).
 
@@ -390,7 +378,80 @@ Var(Y_{i}^{YOY}|\boldsymbol{X}_{i}^{NB}) = \mu_{i}^{YOY}+ \frac{(\mu_{i}^{YOY})^
 
 ## Zero-Inflated Negative Binomial (JUV)
 
-The initial model used to assess juvenile walleye recruitment was identical to the negative binomial fixed effect detailed above with the response $Y^{YOY}$ changed its JUV equivalent $Y^{JUV}$. However, unlike the YOY model, the JUV model suffered from zero inflation, meaning the data contains substantially more zero-valued responses than the model predicts. Like the dispersion mentioned above, a plot of this zero-inflation is shown in the next section on diagnostics. Zero-inflation results in poor overall model fit, potentially biases estimators, and leads to underestimated standard errors. Instead, I fit a zero-inflated negative binomial mixed-effects model. This was chosen over other options for addressing zero-inflation (e.g., hurdle models) because many lakes with zero juvenile counts had non-zero YOY counts. The zero-valued observations are thus likely a mixture of 'true' zeroes (i.e., lakes with no walleye, and therefore no juveniles) and 'random' zeroes (i.e., lakes with small walleye populations where no juvenile walleye were found). The zero-inflated model is a mixture of a point mass at zero for 'true' zero-valued observations ($\omega_i=1$) with a negative binomial distribution for the count data ($\omega_i=0$), which can include 'excess' zero counts. The probability of observing a 'true' zero count for the $i^{th}$ observation is inflated with probability $\pi_i$, so a zero-valued response has probability $1-\pi_i$ of being an 'random' (count) zero. The lake random effect was included in this model because of the increased variance in observed JUV counts relative to YOY counts, and the resulting model remained identifiable. Though the overall magnitude of the random effect variance proved small (see the beginning of the analysis section), its inclusion was maintained for largely theoretical reasons rather than *per se* practical ones.
+The initial model used to assess juvenile walleye recruitment was identical to the negative binomial fixed effect detailed above with the response $Y^{YOY}$ changed its JUV equivalent $Y^{JUV}$.
+
+```{r NB lake RE JUV, cache=T, echo=T, message=F, include=T}
+## Negative binomial model - mixed effects
+# Fit initial model using a quick (but less accurate) algorithm
+#   to use theta estimate
+gnbj <- glmer.nb(juv_catch~
+                offset(log_km_surv)+
+                log_size_acre+
+                I(s_year)+
+                I(s_year^2)+
+                temp_survey+
+                lake_type*
+                Secchi_satellite+
+                (1|wbic),
+           data=fish_sc,
+           nAGQ=0,
+           control=glmerControl(optimizer="nloptwrap"))
+
+# Fit actual model using theta estimate as starting value
+#   (plus more algorithm iterations) to help model convergence
+# Degenerate Hessian for random effects
+g1j <- glmer(juv_catch~
+            offset(log_km_surv)+
+            log_size_acre+
+            I(s_year)+
+            I(s_year^2)+
+            temp_survey+
+            lake_type*
+            Secchi_satellite+
+            (1|wbic),
+    data=fish_sc, 
+    family = MASS::negative.binomial(getME(
+      gnbj, "glmer.nb.theta"), link = "log"), 
+    control=glmerControl(optimizer="nloptwrap"))
+
+```
+
+```{r, echo=T, include=T}
+# The random effect has variance 0 because all random intercepts are 0
+#   This suggests an unidentifiable variance-covariance matrix
+sum(ranef(g1j)$wbic$`(Intercept)`!=0)
+```
+
+However, unlike the YOY model, the JUV model suffered from zero inflation, meaning the data contains substantially more zero-valued responses than the model predicts. Like the dispersion mentioned above, a plot of this zero-inflation is shown in the next section on diagnostics. Zero-inflation results in poor overall model fit, potentially biases estimators, and leads to underestimated standard errors. 
+
+Instead, I fit a zero-inflated negative binomial mixed-effects model.
+
+```{r ZI NB lake RE JUV, cache=T, echo=F, message=F, include=F}
+zi_nb_j <- glmmTMB(juv_catch~
+                offset(log_km_surv)+
+                log_size_acre+
+                I(s_year)+
+                I(s_year^2)+
+                temp_survey+
+                lake_type*
+                clarity+
+                (1|wbic),
+                data=fish_sc,
+        ziformula = ~1+log_size_acre,
+        family = "nbinom2")
+
+s_zinb_juv <- summary(zi_nb_j)
+```
+
+This was chosen over other options for addressing zero-inflation (e.g., hurdle models) because many lakes with zero JUV counts had non-zero YOY counts.
+
+```{r, echo=T, include=T}
+fish %>%
+  filter(juv_catch==0) %>%
+  summarize(`Prop. Non-Zero YOY`=sum(yoy_catch!=0)/n())
+```
+
+The zero-valued observations are thus likely a mixture of 'true' zeroes (i.e., lakes with no walleye, and therefore no juveniles) and 'random' zeroes (i.e., lakes with small walleye populations where no juvenile walleye were found). The zero-inflated model is a mixture of a point mass at zero for 'true' zero-valued observations ($\omega_i=1$) with a negative binomial distribution for the count data ($\omega_i=0$), which can include 'excess' zero counts. The probability of observing a 'true' zero count for the $i^{th}$ observation is inflated with probability $\pi_i$, so a zero-valued response has probability $1-\pi_i$ of being an 'random' (count) zero. The lake random effect was included in this model because of the increased variance in observed JUV counts relative to YOY counts, and the resulting model remained identifiable. Though the overall magnitude of the random effect variance proved small (see the beginning of the analysis section), its inclusion was maintained for largely theoretical reasons rather than *per se* practical ones.
 
 \begin{align*}
 &\begin{cases}
@@ -681,13 +742,6 @@ plot_grid(time_p, time_pval_p, ncol=2,
           rel_widths = c(1/2, 1/2))
 ```
 
-<!--\begin{figure}[!htb]
-\begin{center}
-\includegraphics[width=.8\textwidth, height=3.2in]{time_plot.jpeg}
-\caption{{\footnotesize Left: Year After 1990 Coefficients by Model with Confidence Intervals. Right: Year Coefficient P-Values by Model}}
-\end{center}
-\end{figure}-->
-
 As is shown in the above plot, the log-normal model's linear year term is statistically significant at the 95\% confidence level, and the quadratic year term is negative-valued and borderline significant. This provides moderate evidence that walleye recruitment is indeed declining at a faster rate over time. In this model, the log-count of walleye recruited was increasing year-on-year until $\approx$ 7.34 years after 1990 (between 1997--1998), but has been declining since. Similarly, in the negative binomial YOY model, all year-based coefficients were found to be statistically significant. When controlling for all other factors, the key finding is that change in YOY recruitment across years varies by lake acreage; while the quadratic main effect for year is negative (indicating declining YOY recruitment), the quadratic interaction term with log-acreage is positive. These quadratic year terms are minimized by a log-acreage of $\approx$ 7.28, which corresponds to a lake size of roughly 1451 acres. That is, the model estimates that year-on-year decline in YOY recruitment rates is larger in lakes smaller than 1451 acres, while the decline in larger lakes is less severe. 
 
 Finally, as stated in the previous section, a Durbin-Watson test on the zero-inflated JUV model yielded evidence of positive autocorrelation for JUV recruitment. Usually, this result would motivate model reformulation (e.g., some form of time series model). If the goal was predicting future walleye recruitment, then fitting such a model would almost certainly reduce out-of-sample error. However, given the research questions guiding this project, reformulation risks 'controlling out' the exact effect the model is intended to detect. The direct meaning of this result is that increased JUV recruitment in a given year tends to be related to higher JUV recruitment in subsequent years, though the exact nature of this relationship is less clear. Neither of the JUV model's year coefficients are significant, which suggests that there is insufficient evidence to conclude on the existence of an overall trend JUV recruitment. A plausive explanation for this apparent mismatch is that, as shown in the plot below, JUV recruitment varied within a narrow range from the mid-90's to the early 2010's. However, like the pre-1996 period, the post-2011 period has seen a slight rise in mean recruitment rates which could easily return to baseline levels in the near future. In other words, the apparent positive autocorrelation could well be an artifact of JUV recruitment's small variance and a few unusually high-recruitment years happening close together.
@@ -905,22 +959,7 @@ b <- glm(recruit_yoy~
     contrasts =list(lake_type=c('contr.sum','contr.poly')))
 ```
 
-```{r binom-lake-RE-YOY, echo=F, message=F, include=F}
-
-b2 <- glmer(recruit_yoy~
-             I(s_year)+I(s_year^2)+
-             size_acre+
-             temp_survey+
-        #(1|f_year)+
-        (1|wbic), 
-      data=ft, nAGQ=0,
-      family = binomial(link="logit"), 
-      control = glmerControl(optimizer ='optimx',
-                optCtrl=list(method='L-BFGS-B')))
-
-```
-
-```{r prob-stuff, echo=F, message=F, include=F}
+```{r prob-stuff, eval=F, echo=F, message=F, include=F}
 probabilities <- predict(b2, type = "response")
 predicted.classes <- ifelse(probabilities > 0.5, "pos", "neg")
 
@@ -957,64 +996,36 @@ sum(v)/length(v)
 
 ```
 
-```{r roc, eval=F, cache=T, echo=F, message=F, include=F}
-
-v_me <- model.valid.re(data.re=ft,
-                       fit.re=b2,
-                       B=500,
-                       seed=40)
-
-save(v_me, file="data.Rdata")
-
-```
-
-```{r roc-test, cache=T, echo=F, message=F, include=F}
-
-load(file="data.Rdata")
-roc_tibble <- v_me[["roc_tibble"]]
-one_test_tibble <- v_me[["one_test_tibble"]]
-
-# ks.test() - test whether p-values are uniformly distributed
-# One-ROC
-ks.train.me <- one_test_tibble %>%
-  dplyr::filter(train_or_test=="train") %>%
-  dplyr::select(p.value) %>%
-ks.test("punif", alternative = "g") %>% 
-  tidy() %>%
-  add_column(train_or_test="train")
-
-ks.test.me <- one_test_tibble %>%
-  dplyr::filter(train_or_test=="test") %>%
-  dplyr::select(p.value) %>%
-ks.test("punif", alternative = "g") %>% 
-  tidy() %>%
-  add_column(train_or_test="test")
-
-ks.tibble <- rbind(ks.train.me, ks.test.me) %>%
-  dplyr::select(-method, -alternative) %>%
-  dplyr::mutate(train_or_test = dplyr::recode(train_or_test,
-                                       train="Train",
-                                       test="Test")) %>%
-  dplyr::rename("Test Statistic" = statistic,
-                "P-value" = p.value,
-                "Data"=train_or_test)
-
-
-
-```
-
 ## Motivation & Model
 
 The main body of this project focuses on estimating mean YOY/JUV walleye populations. Here, I include supplementary analysis based on the age-0 (known as young-of-the-year, or YOY) walleye sustainability threshold identified in Hansen et al. [-@Hansen2015a; also, @Hansen2004], who identify an electrofishing survey recruitment rate of 6.2 YOY walleye per km of shoreline as the critical threshold for walleye population sustainability. In particular I expanded the application of this threshold beyond random forest models [@Hansen2017] and Bayesian hierarchical GLMs [@HansenBayes] via Monte Carlo receiver operating characteristic (ROC) curve simulation to assess the discriminatory capabilities of a relatively simple binomial generalized linear mixed-effects model using limited data in predicting Hansen et al.'s [-@Hansen2004] recruitment classifier. The guiding research question of this analysis was whether such a model could produce AUC values significantly larger than the AUC of a "naive guess" ROC curve. In other words, can a relatively simple model meaningfully predict whether a given YOY recruitment will be successful given limited information? If so, this simple classifier could be used to further prioritize lake measurement and conservation actions when used in tandem with existing WDNR methods.
 
-The model was based on the log-normal models found in WDNR's annual Ceded Territory fishery assessment reports. In that spirit, the model included a fixed effect for the natural logarithm of lake size (in acres) and a random effect for each lake. There are two differences between my ME model and the log-normal WDNR model. First, because the ME model is not intended to estimate mean walleye *population* (as is the case for WDNR's log-linear model), but rather to predict the whether YOY walleye are *sampled* ("recruited") at a rate indicating sustainability, I additionally control for the effect of survey temperature due to the effect it has on sampling rates [@Hansen2015a]. Further, I included a quadratic fixed-effect term for survey year (in addition to the linear term in the WDNR model) in order to account for changes in the overall trend of walleye recruitment. The final model was parameterized as follows:
+The model was based on the log-normal models found in WDNR's annual Ceded Territory fishery assessment reports. In that spirit, the model included a fixed effect for the natural logarithm of lake size (in acres) and a random effect for each lake. There are two differences between my ME model and the log-normal WDNR model. First, because the ME model is not intended to estimate mean walleye *population* (as is the case for WDNR's log-linear model), but rather to predict the whether YOY walleye are *sampled* ("recruited") at a rate indicating sustainability, I additionally control for the effect of survey temperature due to the effect it has on sampling rates [@Hansen2015a]. Further, I included a quadratic fixed-effect term for survey year (in addition to the linear term in the WDNR model) in order to account for changes in the overall trend of walleye recruitment.
+
+```{r binom-lake-RE-YOY, echo=T, message=F, include=T}
+
+b2 <- glmer(recruit_yoy~
+             I(s_year)+I(s_year^2)+
+             size_acre+
+             temp_survey+
+        (1|wbic), 
+      data=ft, nAGQ=0,
+      family = binomial(link="logit"), 
+      control = glmerControl(optimizer ='optimx',
+                optCtrl=list(method='L-BFGS-B')))
+
+```
+
+This model is parameterized as follows:
 
 \begin{align*}
 ln\left( \frac{\pi_{i\ell}}{1-\pi_{i\ell}} \right) &= \beta_0 + \alpha_\ell + \beta_1 ln(\text{Acreage}_i) + \beta_2 \text{Survey Temperature}_i\\
 &\qquad + \beta_3 \text{(Years after 1990)}_i + \beta_4 \text{(Years after 1990)}^2_i
 \end{align*}
 
-It is worth setting out the motivation for testing the accuracy of the models using receiver operating characteristic (ROC) curves. Simply put, even though the dataset contains a balanced successful/unsuccessful recruitment ratio, it is likely that the ratio is unbalanced across all lakes. This is even more likely when accounting for the presence of unreliable surveys, which were removed from the dataset for this analysis. Mere accuracy is not enough for a model to be worth considering when successes and failures are unbalanced in the population; given a different dataset with proportion of successful recruitments $p$, naively guessing that a recruitment was successful (if $p>0.5$) or unsuccessful (if $p<0.5$) will yield better-than-random accuracy. ROC curves plot the cumulative true positive rate ("sensitivity") against the cumulative true negative rate ("specificity") for the model, and the resulting curve can be thought of as the model's power as a function of its type I error. That is, ROC curves measure the probability of detecting true positives with respect to the probability of detecting false positives. The area under the ROC curve (AUC) corresponds to the probability that the model will assign a random true positive response a predicted probability of being a success higher than a random true negative response, reflecting how well the model discriminates between the two. The table below more explicitly shows what ROC curves measure.
+It is worth setting out the motivation for testing the accuracy of the models using receiver operating characteristic (ROC) curves. Simply put, even though the dataset contains a balanced successful/unsuccessful recruitment ratio, it is likely that the ratio is unbalanced across all lakes. This is even more likely when accounting for the presence of unreliable surveys, which were removed from the dataset for this analysis. Mere accuracy is not enough for a model to be worth considering when successes and failures are unbalanced in the population; given a different dataset with proportion of successful recruitments $p$, naively guessing that a recruitment was successful (if $p>0.5$) or unsuccessful (if $p<0.5$) will yield better-than-random accuracy. 
+
+ROC curves plot the cumulative true positive rate ("sensitivity") against the cumulative true negative rate ("specificity") for the model, and the resulting curve can be thought of as the model's power as a function of its type I error. That is, ROC curves measure the probability of detecting true positives with respect to the probability of detecting false positives. The area under the ROC curve (AUC) corresponds to the probability that the model will assign a random true positive response a predicted probability of being a success higher than a random true negative response, reflecting how well the model discriminates between the two. The table below more explicitly shows what ROC curves measure.
 
 \begin{table}[!h]
 \begin{minipage}{0.6\textwidth}
@@ -1039,9 +1050,140 @@ Below Threshold & False Positive (FP) & True Negative (TN) \\
 
 ## Statistical Analyses
 
-A series of 1000 ROC curves were used to assess the two models' discriminatory capacities (certain details left for Appendix III). For each iteration, the model was randomly divided into training and testing datasets with a 70/30 split. Both models were fit on the training dataset. Each model was used to predict the probability of successful recruitment on both the training and testing datasets (separately). Then, ROC curves were fit for each model's predictions on each dataset, resulting in four ROC curves. In order for the models to meaningfully improve on random guessing, they have to out-perform the baseline true positive rate, which happened to be exactly 0.5 in the full dataset. In other words, the models are worth considering if they perform measurably better than a coin flip. These ROC curves are shown below.
+A series of 1000 ROC curves were used to assess the model's discriminatory capacities. For each iteration, the data was randomly divided into training and testing sets with a 70/30 split. The model was fit on the training dataset and then predicted the probability of successful recruitment on both the training and testing data sets (separately). Then, ROC curves were fit for the model's predictions on each dataset, resulting in two ROC curves.
 
-```{r roc-plot, echo=F, message=F, warning=F, fig.cap="ROC Curve on Training and Test Datasets"}
+```{r, eval=F, echo=T}
+model.valid.re <- function(data.re, fit.re,
+                           B=5, seed=1){
+  test_list <- list()
+  one_test_list <- list()
+  roc_list <- list()
+  # Random effect
+  auc.train.re <- vector(mode = "numeric", length = B)
+  auc.test.re <- vector(mode = "numeric", length = B)
+  data.re$pred.prob.full <- fitted(fit.re)
+  auc.full.re <- roc(data.re$recruit_yoy,
+                     data.re$pred.prob.full, data=data.re)$auc
+  
+  # Core loop
+  set.seed(seed)
+  for(i in 1:B){
+    sample <- sample.split(data.re$recruit_yoy, 
+                           SplitRatio = .7)
+    
+    # Random effect
+    train.re <- subset(data.re, sample == TRUE)
+    test.re <- subset(data.re, sample == FALSE)
+    
+    fit.train.re <- glmer(formula(fit.re),
+                          data = train.re,
+                          family = "binomial",
+                          nAGQ=0)
+    
+    train.re$pred.prob <- fitted(fit.train.re)
+    roc.train.re <- roc(train.re$recruit_yoy, 
+                        train.re$pred.prob,
+                        data=train.re)
+    auc.train.re[i] <- roc.train.re$auc
+    
+    test.re$pred.prob.back <- predict(fit.train.re,
+                                      newdata=test.re,
+                                      type="response",
+                                      allow.new.levels=T)
+    roc.test.re <- roc(test.re$recruit_yoy,
+                       test.re$pred.prob.back,
+                       data=test.re)
+    auc.test.re[i] <- roc.test.re$auc
+    
+    ## Return coords of both ROC ##
+    tr.re <- roc.train.re %>%
+      coords(ret = c("sensitivity", "specificity"), 
+             transpose=F) %>%
+      add_column("train_or_test"="train",
+                 "FE_or_ME"="ME") %>%
+      mutate("point"=1:n())
+    te.re <- roc.test.re %>%
+      coords(ret = c("sensitivity", "specificity"),
+             transpose=F) %>%
+      add_column("train_or_test"="test",
+                 "FE_or_ME"="ME") %>%
+      mutate("point"=1:n())
+    
+    roc_list[[i]] <- rbind(tr.re, te.re) %>%
+      add_column("Loop"=i)
+    
+    ## One-ROC test ##
+    # Train
+    auc.test.train.re <- roc.area(obs=as.numeric(
+      as.character(train.re$recruit_yoy)),
+      pred=train.re$pred.prob) %>%
+      as_tibble() %>%
+      add_column("train_or_test"="train",
+                 "ME_or_FE"="ME")
+    
+    # Test
+    auc.test.test.re <- roc.area(obs=as.numeric(
+      as.character(test.re$recruit_yoy)),
+      pred=test.re$pred.prob.back) %>%
+      as_tibble() %>%
+      add_column("train_or_test"="test",
+                 "ME_or_FE"="ME")
+    
+    # Combine and put in list
+    one_test_list[[i]] <- rbind(auc.test.train.re,
+                                auc.test.test.re)
+    
+  }
+  
+  ## Putting results together for return() ##
+  # Tibble of all roc.test() results
+  one_test_tibble <- bind_rows(one_test_list)
+  
+  # Tibble of summary statistics for each point along ROC curve
+  # Right now, only sensitivity and specificity
+  # Add precision and recall?
+  roc_tibble <- bind_rows(roc_list) %>% 
+    group_by(train_or_test, point) %>%
+    summarize(mean_sens = mean(sensitivity),
+              mean_spec = mean(specificity),
+              L_sens = quantile(sensitivity, 0.025),
+              U_sens = quantile(sensitivity, 0.975))
+
+  # Combine all tibbles into list for return()
+  ret_list <- lst(roc_tibble,
+                  one_test_tibble)
+  
+  return(ret_list)
+}
+
+```
+
+
+In order for the models to meaningfully improve on random guessing, they have to out-perform the baseline true positive rate, which happened to be exactly 0.5 in the full dataset. In other words, the models are worth considering if they perform measurably better than a coin flip. 
+
+```{r roc, eval=F, cache=T, echo=T, message=F, include=T}
+v_me <- model.valid.re(data.re=ft,
+                       fit.re=b2,
+                       B=1000,
+                       seed=40)
+```
+
+```{r, eval=F, echo=F}
+save(v_me, file="data.Rdata")
+```
+
+```{r, eval=T, echo=F}
+load(file="data.Rdata")
+```
+
+```{r, eval=T, echo=T}
+roc_tibble <- v_me[["roc_tibble"]]
+one_test_tibble <- v_me[["one_test_tibble"]]
+```
+
+These ROC curves are shown below.
+
+```{r roc-plot, echo=T, message=F, warning=F, fig.cap="ROC Curve on Training and Test Datasets"}
 # Plot ROC by train/test
 p_roc_curves <- ggplot(data=roc_tibble,
        aes(x=(1-mean_spec), y=mean_sens,
@@ -1067,7 +1209,7 @@ The modified Mann--Whitney $U$ test for ROC curves detailed by Mason and Graham 
 
 The distribution of p-values for the 1000 Mann--Whitney $U$ tests is given below. Also shown is a plot showing the empirical distribution function of the p-values with the cumulative distribution function of a standard uniform distribution.^[Confidence intervals for the empirical distribution functions calculated using the Dvoretzky--Kiefer--Wolfowitz inequality found in Dvoretzky et al. [@ECDF].] As expected, the model always yields better-than-random discrimination between successful and unsuccessful recruitments for the training data; this is an uninteresting and obvious result, but it is included here for reference. The distribution of p-values on the test set is also visibly non-uniform, as was confirmed by the results of the Kolmogorov-Smirnov test, given in the table below. Note that the p-values are only *approximately* zero, due in large part due to the sample size ($B=1000$).
 
-```{r ecdf, echo=F, message=F, warning=F, fig.cap="Top: Distribution of Mann--Whitney U Test P-Values by Dataset\newline Bottom: Empirical and Theoretical Cumulative Distribution Functions for Mann--Whitney U Test P-Values"}
+```{r ecdf, echo=T, message=F, warning=F, fig.height=7, fig.cap="Top: Distribution of Mann--Whitney U Test P-Values by Dataset\newline Bottom: Empirical and Theoretical Cumulative Distribution Functions for Mann--Whitney U Test P-Values"}
 # Distribution of roc.area() p-values (One-ROC test)
 one_test_p <- one_test_tibble %>%
 ggplot(aes(p.value, fill=train_or_test)) +

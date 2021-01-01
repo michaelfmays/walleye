@@ -147,27 +147,7 @@ model.valid.re <- function(data.re, fit.re,
               mean_spec = mean(specificity),
               L_sens = quantile(sensitivity, 0.025),
               U_sens = quantile(sensitivity, 0.975))
-  
-  ## Summary statistics for AUC ##
-  ## Clean this up using dplyr::summarize()
-  
-  # Random effects
-  auc.train.min.re <- round(min(auc.train.re), digits=4)
-  auc.train.max.re <- round(max(auc.train.re), digits=4)
-  auc.train.q1.re <- round(quantile(auc.train.re, 0.25), digits=4)
-  auc.train.q3.re <- round(quantile(auc.train.re, 0.75), digits=4)
-  auc.train.median.re <- round(median(auc.train.re), digits=4)
-  auc.train.mean.re <- round(mean(auc.train.re), digits=4)
-  auc.train.var.re <- round(var(auc.train.re), digits=4)
-  
-  auc.test.min.re <- round(min(auc.test.re), digits=4)
-  auc.test.max.re <- round(max(auc.test.re), digits=4)
-  auc.test.q1.re <- round(quantile(auc.test.re, 0.25), digits=4)
-  auc.test.q3.re <- round(quantile(auc.test.re, 0.75), digits=4)
-  auc.test.median.re <- round(median(auc.test.re), digits=4)
-  auc.test.mean.re <- round(mean(auc.test.re), digits=4)
-  auc.test.var.re <- round(var(auc.test.re), digits=4)
-  
+
   # Combine all tibbles into list for return()
   ret_list <- lst(roc_tibble,
                   one_test_tibble)

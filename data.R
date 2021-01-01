@@ -1,3 +1,5 @@
+## ---- data.R
+
 fish <- read_csv("fish.csv") %>%
   drop_na() %>%
   mutate(
@@ -15,6 +17,8 @@ fish <- read_csv("fish.csv") %>%
          # an outlier
   )
 
+# Data with scaled temperature variables to help
+#   the more complicated models converge faster
 fish_sc <- fish %>%
   mutate(log_km_surv = log(meters_surv/1000),
          f_year = as.factor(year),
@@ -23,16 +27,21 @@ fish_sc <- fish %>%
   mutate_at(.vars=c("temp_survey",
                     "gdd_wtr_5c"), .funs = scale)
 
+# Data with scaled temps and 
+#   - log'd acreage for use as an offset
+#   - year scaled down such that the baseline year (1990) is 0
 ft <- fish %>%
   mutate(size_acre=log(size_acre),
-         f_year = as.factor(year),
          s_year = (year-(min(year)))) %>%
   mutate_at(.vars=c("temp_survey",
                     "gdd_wtr_5c"), .funs = scale)
 
+# Data without zero-valued YOY obs and
+#   - km surveyed
+#   - log'd survey km for use as an offset
+#   - year scaled down such that the baseline year (1990) is 0
 fish_nz <- fish %>%
   filter(yoy_catch!=0) %>%
-  mutate(log_km_surv = log(meters_surv/1000),
-         km_surv = meters_surv/1000,
-         f_year = as.factor(year),
+  mutate(km_surv = meters_surv/1000,
+         log_km_surv = log(km_surv),
          s_year = year-(min(year)+1))
